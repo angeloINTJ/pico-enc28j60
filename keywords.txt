@@ -1,0 +1,40 @@
+#######################################
+# Syntax Coloring Map For ENC28J60
+#######################################
+
+# Datatypes (KEYWORD1)
+ENC28J60	KEYWORD1
+
+# Methods and Functions (KEYWORD2)
+begin	KEYWORD2
+end	KEYWORD2
+isInitialized	KEYWORD2
+getRevision	KEYWORD2
+linkStatus	KEYWORD2
+linkStatusCached	KEYWORD2
+sendPacket	KEYWORD2
+packetAvailable	KEYWORD2
+receivePacket	KEYWORD2
+receivePacketNonBlocking	KEYWORD2
+discardPacket	KEYWORD2
+getMacAddress	KEYWORD2
+setMacAddress	KEYWORD2
+getRxBufferSize	KEYWORD2
+setRxBufferSize	KEYWORD2
+enableInterrupts	KEYWORD2
+handleInterrupt	KEYWORD2
+getDriver	KEYWORD2
+getConfig	KEYWORD2
+
+# FreeRTOS Methods (KEYWORD2)
+beginFreeRTOS	KEYWORD2
+getFreeRTOSInterface	KEYWORD2
+
+# Constants (LITERAL1)
+DEFAULT_MISO_PIN	LITERAL1
+DEFAULT_MOSI_PIN	LITERAL1
+DEFAULT_SCLK_PIN	LITERAL1
+DEFAULT_CS_PIN	LITERAL1
+DEFAULT_IRQ_PIN	LITERAL1
+DEFAULT_RX_SIZE	LITERAL1
+MAX_FRAME_SIZE	LITERAL1

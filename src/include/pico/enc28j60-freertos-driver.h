@@ -3,7 +3,9 @@
 
 #pragma once
 
-#include "pico/enc28j60-driver.h"
+#ifdef FREERTOS_H
+
+#include "enc28j60-driver.h"
 
 #include <FreeRTOS_IP.h>
 
@@ -27,3 +29,5 @@ enc28j60_freertos_output_frame(struct xNetworkInterface *pxDescriptor,
 //! expensive. The cached status is updated following an interrupt.
 BaseType_t
 enc28j60_freertos_get_phy_link_status(NetworkInterface_t *pxInterface);
+
+#endif // FREERTOS_H

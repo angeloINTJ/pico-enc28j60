@@ -2,7 +2,7 @@
 // Licensed under the MIT license, see the LICENSE file for details.
 
 #include "enc28j60-cmd.h"
-#include "pico/enc28j60-driver.h"
+#include "enc28j60-driver.h"
 
 #include <hardware/dma.h>
 #include <hardware/irq.h>

@@ -1,8 +1,10 @@
 // Copyright 2024 Lukasz Janyst <lukasz@jany.st>
 // Licensed under the MIT license, see the LICENSE file for details.
 
-#include "pico/enc28j60-freertos-driver.h"
-#include "pico/enc28j60-driver.h"
+#ifdef FREERTOS_H
+
+#include "enc28j60-freertos-driver.h"
+#include "enc28j60-driver.h"
 
 #include <FreeRTOS.h>
 #include <FreeRTOS_IP.h>
@@ -256,3 +258,5 @@ enc28j60_freertos_get_phy_link_status(NetworkInterface_t *pxInterface)
     driver_data *dd = pxInterface->pvArgument;
     return dd->link_up;
 }
+
+#endif // FREERTOS_H
