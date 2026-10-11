@@ -32,17 +32,24 @@ All pins are configurable via ENC28J60Config structure.
 
 ## Installation
 
-### Arduino IDE Library Manager (Coming Soon)
-Search for "PicoENC28J60" in the Library Manager.
+### Arduino IDE Library Manager
+Search for "PicoENC28J60" in the Library Manager (available after submission).
 
 ### Manual Installation
-1. Download this repository as ZIP
-2. In Arduino IDE: Sketch -> Include Library -> Add .ZIP Library
+1. Download this repository as ZIP from [GitHub Releases](https://github.com/angeloINTJ/pico-enc28j60/releases)
+2. In Arduino IDE: Sketch → Include Library → Add .ZIP Library
 3. Select the downloaded ZIP file
 
 ### PlatformIO
+```ini
 lib_deps = 
-    https://github.com/yourusername/PicoENC28J60
+    https://github.com/angeloINTJ/pico-enc28j60
+```
+
+### Arduino CLI
+```bash
+arduino-cli lib install PicoENC28J60
+```
 
 ## Quick Start
 
@@ -110,7 +117,7 @@ void loop() {
         // Simple ARP request frame
         uint8_t frame[60] = {0};
         memset(frame, 0xFF, 6);  // Broadcast destination
-        memcpy(frame + 6, eth.getMACAddress(), 6);  // Source MAC
+        eth.getMACAddress(frame + 6);  // Source MAC
         frame[12] = 0x08; frame[13] = 0x06;  // ARP
         
         if (eth.sendFrame(frame, 60)) {
@@ -207,13 +214,13 @@ Poll for interrupts. Must be called regularly in polling mode.
 
 ## Examples
 
-See the examples/ folder:
-- BasicTest - Simple initialization and packet loop
-- AdvancedTest - Interrupt mode, custom MAC, frame parsing
+See the `examples/` folder:
+- **BasicTest** - Simple initialization and packet loop
+- **AdvancedTest** - Interrupt mode, custom MAC, frame parsing
 
 ## Credits
 
-This library is a port of pico-enc28j60 by Lukasz Janyst (lukasz@jany.st)
+This library is a port of **pico-enc28j60** by **Lukasz Janyst** (lukasz@jany.st)
 - Original repository: https://github.com/ljanyst/pico-enc28j60
 - Licensed under MIT License
 
