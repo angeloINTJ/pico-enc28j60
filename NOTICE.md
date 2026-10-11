@@ -10,8 +10,10 @@ on top, which is what that license asks for when the work is passed on. This fil
 says who wrote what.
 
 The fork starts from the upstream commit `f9f653b` (22 June 2025). The history of
-Lukasz's work, 52 commits, is in the upstream repository; the history of this
-repository starts with the import of his files.
+Lukasz's work, 52 commits, is part of the history of this repository: a merge commit
+records `f9f653b` as an ancestor without changing any file, so `git log` and
+`git shortlog` show his commits. His files were first committed here as an import
+(`ef509e9`), and the port is everything that came after.
 
 ## Lukasz Janyst, original work, 2024-2025
 

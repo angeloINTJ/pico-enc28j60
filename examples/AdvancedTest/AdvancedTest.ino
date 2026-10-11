@@ -98,19 +98,19 @@ void loop() {
 
 void processPackets() {
     uint8_t buffer[1520];
-    
+
     while (eth->available()) {
         uint16_t len = eth->receiveFrame(buffer, sizeof(buffer));
         if (len == 0) break;
-        
+
         Serial.printf("\n[RX] %d bytes", len);
-        
+
         if (len >= 14) {
             // Parse Ethernet header
             uint16_t ethertype = (buffer[12] << 8) | buffer[13];
-            
+
             Serial.printf(" | Type: 0x%04X", ethertype);
-            
+
             switch (ethertype) {
                 case 0x0800: // IPv4
                     Serial.print(" (IPv4)");
@@ -144,16 +144,16 @@ void sendTestFrame() {
     // Alternate between different frame types
     static int frame_type = 0;
     frame_type = (frame_type + 1) % 3;
-    
+
     uint8_t frame[1500] = {0};
     uint16_t frame_len = 60;
-    
+
     // Broadcast destination
     memset(frame, 0xFF, 6);
-    
+
     // Source MAC
     eth->getMACAddress(frame + 6);
-    
+
     switch (frame_type) {
         case 0: // ARP Request
             frame[12] = 0x08; frame[13] = 0x06;
@@ -167,7 +167,7 @@ void sendTestFrame() {
             frame[38] = 192; frame[39] = 168; frame[40] = 1; frame[41] = 1;
             Serial.println("[TX] Sending ARP request");
             break;
-            
+
         case 1: // IPv4 ICMP Echo Request (ping)
             frame[12] = 0x08; frame[13] = 0x00;
             // Minimal IPv4 header
@@ -182,7 +182,7 @@ void sendTestFrame() {
             frame_len = 60;
             Serial.println("[TX] Sending ICMP echo request");
             break;
-            
+
         case 2: // Custom test pattern
             frame[12] = 0x88; frame[13] = 0xB5; // Custom ethertype
             for (int i = 14; i < 60; i++) {
@@ -191,7 +191,7 @@ void sendTestFrame() {
             Serial.println("[TX] Sending custom test pattern");
             break;
     }
-    
+
     if (eth->sendFrame(frame, frame_len)) {
         // Frame queued successfully
     } else {

@@ -69,4 +69,6 @@ GP6), and the HTTP tests of `extras/bench/webtest.py` for the web server example
 
 ## 1.0.0 - 2026-10-10
 
-First version: the original driver with an Arduino class around it.
+First version: the original driver with an Arduino class around it. Its tag was
+withdrawn after 1.1.0, because this version could not receive or keep sending frames
+on real hardware. Use 1.1.0 or later.

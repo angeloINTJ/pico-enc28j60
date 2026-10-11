@@ -217,7 +217,7 @@ struct has the following fields:
  * irq_cb - callback function for the device interrupts
  * irq_data - data for the callback
  * notify - notification helper described below
- 
+
 The DMA notification struct looks as follows:
 
 ```c
@@ -268,7 +268,7 @@ void setup_network()
 {
     memset(&iface, 0, sizeof(enc28j60_freertos_interface));
     enc28j60_config *drv_cfg = enc28j60_get_default_config();
-    
+
     // Choose a MAC address
     memcpy(drv_cfg->mac_addr, mac_addr, 6);
 
@@ -373,6 +373,15 @@ See the examples/ folder:
 
 ---
 
+## Reporting problems
+-------------------
+
+Open an [issue](https://github.com/angeloINTJ/pico-enc28j60/issues). Say which board
+and which version of the arduino-pico core you use, how the chip is wired (the
+`ENC28J60Config` you pass), and, if you can run it, what `extras/bench/bench.py` prints.
+
+---
+
 ## References
 ----------
 
@@ -389,7 +398,7 @@ by **Lukasz Janyst**, and his work is the foundation of everything here: the PIO
 program that speaks SPI to the chip, the ENC28J60 driver in C, the FreeRTOS+TCP
 driver, the documentation of that driver in this README and the photographs in
 `imgs/`. They are included with his copyright notice and under the MIT license he
-published them with. The upstream history, 52 commits, is in his repository.
+published them with. His 52 commits are part of the history of this repository too.
 
 **Ângelo Moisés Alves** ([@angeloINTJ](https://github.com/angeloINTJ)) adapted it
 to the Arduino IDE: the C++ classes, the lwIP network interface, the examples, the
