@@ -13,12 +13,27 @@
  * pins: see ENC28J60Config in PicoENC28J60.h (SCK=GP2, MOSI=GP3, MISO=GP4,
  * CS=GP5, RST=GP7 by default).
  *
+ * If you also wire the chip's INT pin to a GPIO and put its number in INT_PIN,
+ * frames are served the moment they arrive instead of within 5 ms, and an idle
+ * network costs no SPI traffic. Leave it at -1 when INT is not wired.
+ *
  * There is no authentication: run it on a network you trust.
  */
 #include <PicoENC28J60lwIP.h>
 #include <WebServer.h>
 
-PicoENC28J60lwIP eth;  // default pins
+#ifndef INT_PIN
+#define INT_PIN -1  // e.g. 6 for INT on GP6
+#endif
+
+static ENC28J60Config makeConfig()
+{
+    ENC28J60Config config;  // default pins
+    config.irq_pin = INT_PIN;
+    return config;
+}
+
+PicoENC28J60lwIP eth(makeConfig());
 WebServer server(80);
 
 static bool ledOn = false;

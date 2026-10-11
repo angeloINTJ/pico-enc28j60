@@ -26,11 +26,22 @@
  * only use PicoENC28J60.h. Once the interface is started, leave the chip to
  * lwIP and do not call the PicoENC28J60 methods yourself.
  *
- * The chip is checked for frames every 5 ms (setPollPeriod() changes that) by a
- * timer of this class. The polling of the core cannot be relied on for a device
- * without an interrupt line: it is rescheduled every time user code calls into
- * lwIP, so a sketch that keeps calling it, like a WebServer loop with a client
- * connected, stops the reception of frames altogether.
+ * Without an interrupt line the chip is checked for frames every 5 ms
+ * (setPollPeriod() changes that) by a timer of this class. The polling of the
+ * core cannot be relied on for a device without an interrupt line: it is
+ * rescheduled every time user code calls into lwIP, so a sketch that keeps
+ * calling it, like a WebServer loop with a client connected, stops the
+ * reception of frames altogether.
+ *
+ * With the chip's INT pin wired and given as ENC28J60Config::irq_pin, a frame is
+ * served the moment it arrives and an idle network costs no SPI traffic at all;
+ * the timer stays as a safety net (every 20 ms by default). The interrupt
+ * handler only wakes lwIP up: the chip is always talked to from the lwIP
+ * context, never from the handler.
+ *
+ *     ENC28J60Config cfg;
+ *     cfg.irq_pin = 6;                // INT on GP6
+ *     PicoENC28J60lwIP eth(cfg);
  */
 
 #include <LwipEthernet.h>
@@ -55,21 +66,30 @@ public:
 
     void setConfig(const ENC28J60Config& config) { _config = config; }
 
+    //! Function to call from the interrupt handler of the INT pin; see PicoENC28J60::setInterruptCallback()
+    void setWake(void (*wake)(void*), void* arg) {
+        _wake = wake;
+        _wakeArg = arg;
+    }
+
     bool begin(const uint8_t* mac, netif* net) {
         (void)net;
         ENC28J60Config config = _config;
         memcpy(config.mac_addr, mac, 6);
+        _eth.setInterruptCallback(_wake, _wakeArg);
         if (!_eth.begin(config)) {
             return false;
         }
         _frameLen = 0;
+        _burst = false;
         _linked = _eth.linkStatus();
         _lastLinkCheck = millis();
         return true;
     }
 
-    // The driver cannot be torn down, see PicoENC28J60::~PicoENC28J60().
-    void end() {}
+    // The driver cannot be torn down, see PicoENC28J60::~PicoENC28J60(); it
+    // can be told to stop waking anybody up.
+    void end() { _eth.setInterruptCallback(nullptr, nullptr); }
 
     // Called by lwIP with its lock held. LWIP_NETIF_TX_SINGLE_PBUF is set in the
     // core, so p is one contiguous buffer.
@@ -80,13 +100,26 @@ public:
     // Everything below runs from the lwIP polling worker with the lwIP lock held,
     // which is what keeps the PIO state machine to one user at a time.
     uint16_t readFrameSize() {
-        if (_frameLen == 0) {
-            uint32_t now = millis();
-            if (now - _lastLinkCheck >= LINK_CHECK_MS) {
-                _lastLinkCheck = now;
-                _linked = _eth.linkStatus();
+        if (_frameLen != 0) {
+            return _frameLen;
+        }
+
+        if (_config.irq_pin >= 0) {
+            // A call that finds the INT line high returns without touching the chip
+            if (!_burst) {
+                if (!_eth.interruptPending()) {
+                    return 0;
+                }
+                _serveEvents();
+                _burst = true;
             }
-            _frameLen = _eth.receiveFrame(_frame, sizeof(_frame));
+        } else {
+            _checkLink();
+        }
+
+        _frameLen = _eth.receiveFrame(_frame, sizeof(_frame));
+        if (_frameLen == 0) {
+            _burst = false;  // the receive buffer is empty
         }
         return _frameLen;
     }
@@ -95,8 +128,15 @@ public:
         uint16_t n = (size < _frameLen) ? size : _frameLen;
         memcpy(buffer, _frame, n);
         _frameLen = 0;
+        _delivered++;
         return n;
     }
+
+    //! Frames handed to lwIP so far
+    uint32_t delivered() const { return _delivered; }
+
+    //! More frames may be waiting: lwIP reads a limited number of them at a time
+    bool moreWaiting() const { return _burst; }
 
     void discardFrame(uint16_t) { _frameLen = 0; }
 
@@ -114,12 +154,39 @@ public:
 private:
     static constexpr uint32_t LINK_CHECK_MS = 250;
 
+    void _checkLink() {
+        uint32_t now = millis();
+        if (now - _lastLinkCheck >= LINK_CHECK_MS) {
+            _lastLinkCheck = now;
+            _linked = _eth.linkStatus();
+        }
+    }
+
+    // What the chip reports besides frames. The flags are cleared one by one: a
+    // frame is not an event to clear, the receive buffer being empty is.
+    void _serveEvents() {
+        uint8_t events = _eth.peekInterruptFlags() & (PicoENC28J60::INT_LINK_CHANGE | PicoENC28J60::INT_RX_ERROR);
+        if (events) {
+            _eth.acknowledgeInterrupts(events);
+        }
+        // A missed event must not leave the state wrong for long: look as well
+        // when the flag is set, and every now and then when it is not
+        if ((events & PicoENC28J60::INT_LINK_CHANGE) || millis() - _lastLinkCheck >= LINK_CHECK_MS) {
+            _lastLinkCheck = millis();
+            _linked = _eth.linkStatus();
+        }
+    }
+
     PicoENC28J60 _eth;
     ENC28J60Config _config;
     uint8_t _frame[PicoENC28J60::MAX_FRAME_SIZE];
     uint16_t _frameLen = 0;
     bool _linked = false;
+    bool _burst = false;  // inside a run of frames that started with an interrupt
+    uint32_t _delivered = 0;
     uint32_t _lastLinkCheck = 0;
+    void (*_wake)(void*) = nullptr;
+    void* _wakeArg = nullptr;
 };
 
 /**
@@ -131,30 +198,59 @@ private:
  */
 class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
 public:
-    explicit PicoENC28J60lwIP(const ENC28J60Config& config = ENC28J60Config()) { setConfig(config); }
+    explicit PicoENC28J60lwIP(const ENC28J60Config& config = ENC28J60Config()) {
+        setConfig(config);
+        _irq = config.irq_pin >= 0;
+        _pollMs = _irq ? 20 : 5;
+        setWake(wake, this);
+    }
 
     //! Start the interface (DHCP unless config() was called first); false if no ENC28J60 answers
     bool begin(const uint8_t* macAddress = nullptr, const uint16_t mtu = DEFAULT_MTU) {
+#ifndef __FREERTOS
+        async_context_t* context = __getEthernetContext();
+        if (_irq) {
+            // Before the chip can raise the line, the worker that it wakes must exist
+            memset(&_irqWorker, 0, sizeof(_irqWorker));
+            _irqWorker.do_work = irqWork;
+            _irqWorker.user_data = this;
+            async_context_add_when_pending_worker(context, &_irqWorker);
+        }
+#endif
         if (!LwipIntfDev<PicoENC28J60LwipDriver>::begin(macAddress, mtu)) {
+#ifndef __FREERTOS
+            if (_irq) {
+                async_context_remove_when_pending_worker(context, &_irqWorker);
+            }
+#endif
             return false;
         }
 #ifndef __FREERTOS
         memset(&_pollWorker, 0, sizeof(_pollWorker));
         _pollWorker.do_work = poll;
         _pollWorker.user_data = this;
-        async_context_add_at_time_worker_in_ms(__getEthernetContext(), &_pollWorker, _pollMs);
+        async_context_add_at_time_worker_in_ms(context, &_pollWorker, _pollMs);
 #endif
         return true;
     }
 
     void end() {
 #ifndef __FREERTOS
-        async_context_remove_at_time_worker(__getEthernetContext(), &_pollWorker);
+        async_context_t* context = __getEthernetContext();
+        async_context_remove_at_time_worker(context, &_pollWorker);
+        if (_irq) {
+            LwipIntfDev<PicoENC28J60LwipDriver>::end();  // stops the wake-ups first
+            async_context_remove_when_pending_worker(context, &_irqWorker);
+            return;
+        }
 #endif
         LwipIntfDev<PicoENC28J60LwipDriver>::end();
     }
 
-    //! How often to check the chip for frames, in milliseconds (default 5)
+    /**
+     * How often to check the chip for frames, in milliseconds. Defaults to 5, or
+     * to 20 with an INT pin, where it only has to catch what the interrupt missed.
+     */
     void setPollPeriod(uint32_t ms) {
         if (ms > 0) {
             _pollMs = ms;
@@ -163,18 +259,48 @@ public:
 
 private:
 #ifndef __FREERTOS
-    // Runs in the lwIP context with its lock held. It schedules itself again, so
-    // calls into lwIP from user code cannot push it back like they do with the
-    // polling worker of the core.
-    static void poll(async_context_t* context, async_at_time_worker_t* worker) {
-        PicoENC28J60lwIP* self = static_cast<PicoENC28J60lwIP*>(worker->user_data);
-        self->handlePackets();
+    // One round of work, in the lwIP context with its lock held. Returns true if
+    // lwIP stopped reading frames because of its limit per call, so that there
+    // may be more.
+    bool service() {
+        uint32_t before = delivered();
+        handlePackets();
         sys_check_timeouts();
-        async_context_add_at_time_worker_in_ms(context, worker, self->_pollMs);
+        return delivered() - before >= RX_BURST_LIMIT || moreWaiting();
     }
 
+    // Runs in the lwIP context. It schedules itself again, so calls into lwIP
+    // from user code cannot push it back like they do with the polling worker of
+    // the core.
+    static void poll(async_context_t* context, async_at_time_worker_t* worker) {
+        PicoENC28J60lwIP* self = static_cast<PicoENC28J60lwIP*>(worker->user_data);
+        bool more = self->service();
+        async_context_add_at_time_worker_in_ms(context, worker, more ? 0 : self->_pollMs);
+    }
+
+    // Runs in the lwIP context after the INT pin fell
+    static void irqWork(async_context_t* context, async_when_pending_worker_t* worker) {
+        PicoENC28J60lwIP* self = static_cast<PicoENC28J60lwIP*>(worker->user_data);
+        if (self->service()) {
+            async_context_set_work_pending(context, worker);
+        }
+    }
+
+    // Called from the interrupt handler of the INT pin: nothing but a request
+    static void wake(void* arg) {
+        PicoENC28J60lwIP* self = static_cast<PicoENC28J60lwIP*>(arg);
+        async_context_set_work_pending(__getEthernetContext(), &self->_irqWorker);
+    }
+
+    // lwIP's handlePackets() hands over this many frames at most per call
+    static constexpr uint32_t RX_BURST_LIMIT = 9;
+
     async_at_time_worker_t _pollWorker;
+    async_when_pending_worker_t _irqWorker;
+#else
+    static void wake(void*) {}
 #endif
+    bool _irq = false;
     uint32_t _pollMs = 5;
 };
 
