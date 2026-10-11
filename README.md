@@ -311,8 +311,6 @@ See the examples/ folder:
   with a real browser on the bench.
 - BasicTest - raw frames: initialization, link, receive and print, send a test frame
 - AdvancedTest - interrupt mode (needs INT wired), custom MAC, frame parsing
-- DhcpClient - experimental raw-frame DHCP client written before the receive
-  path was fixed and not tested since. Prefer PicoENC28J60lwIP for DHCP.
 
 ---
 
