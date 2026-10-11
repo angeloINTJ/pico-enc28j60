@@ -314,7 +314,9 @@ void sendDhcpRequest() {
     dhcp[0]=1; dhcp[1]=1; dhcp[2]=6; dhcp[3]=0;
     dhcp[4]=g_xid>>24; dhcp[5]=g_xid>>16; dhcp[6]=g_xid>>8; dhcp[7]=g_xid;
     dhcp[8]=0; dhcp[9]=0; dhcp[10]=0x80; dhcp[11]=0;
-    memset(dhcp+12, 0, 16);
+    // ciaddr = offered IP (some servers require this in REQUEST)
+    memcpy(dhcp+12, (uint8_t*)&g_offeredIp, 4);
+    memset(dhcp+16, 0, 12); // yiaddr, siaddr, giaddr = 0
     memcpy(dhcp+28, MY_MAC, 6);
     dhcp[236]=99; dhcp[237]=130; dhcp[238]=83; dhcp[239]=99;
     
