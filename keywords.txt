@@ -1,0 +1,39 @@
+#######################################
+# Syntax Coloring Map For PicoENC28J60
+#######################################
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+PicoENC28J60	KEYWORD1
+ENC28J60Config	KEYWORD1
+EthernetFrame	KEYWORD1
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+begin	KEYWORD2
+linkStatus	KEYWORD2
+getRevision	KEYWORD2
+getMACAddress	KEYWORD2
+setMACAddress	KEYWORD2
+sendFrame	KEYWORD2
+available	KEYWORD2
+receiveFrame	KEYWORD2
+discardFrame	KEYWORD2
+getInterruptFlags	KEYWORD2
+hasPacket	KEYWORD2
+hasTXComplete	KEYWORD2
+hasLinkChange	KEYWORD2
+hasRXError	KEYWORD2
+acknowledgeInterrupts	KEYWORD2
+setInterruptCallback	KEYWORD2
+poll	KEYWORD2
+isInitialized	KEYWORD2
+getDriverHandle	KEYWORD2
+#######################################
+# Constants (LITERAL1)
+#######################################
+INT_LINK_CHANGE	LITERAL1
+INT_TX_COMPLETE	LITERAL1
+INT_PACKET_RX	LITERAL1
+INT_RX_ERROR	LITERAL1
+INT_GLOBAL	LITERAL1
