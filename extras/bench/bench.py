@@ -133,8 +133,14 @@ def flash(port, fqbn):
     build = os.path.join(tempfile.gettempdir(), "picoenc-bench-build")
     subprocess.run(["arduino-cli", "compile", "--fqbn", fqbn, "--library", REPO,
                     "--build-path", build, SKETCH], check=True)
-    subprocess.run(["arduino-cli", "upload", "-p", port, "--fqbn", fqbn,
+    # The core's reset-and-deploy helper only works with the real device node,
+    # not with the /dev/serial/by-id symlink.
+    subprocess.run(["arduino-cli", "upload", "-p", os.path.realpath(port), "--fqbn", fqbn,
                     "--input-dir", build], check=True)
+    # Wait for the board to drop off the bus and come back with the new firmware.
+    deadline = time.time() + 5
+    while os.path.exists(port) and time.time() < deadline:
+        time.sleep(0.2)
     deadline = time.time() + 30
     while not os.path.exists(port):
         if time.time() > deadline:
