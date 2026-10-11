@@ -33,6 +33,10 @@ PicoENC28J60 eth(makeConfig());
 static uint8_t rxbuf[1600];
 static uint8_t txbuf[1600];
 
+// Result of the error-path probe that runs before the real initialization
+static bool probeOk = true;
+static uint32_t probeMs = 0;
+
 struct Stats {
     uint32_t frames, bench, dup, stale, gap, bad;
     uint32_t arp, icmp, echo, other, runt;
@@ -299,9 +303,11 @@ static void printInfo()
 {
     uint8_t m[6];
     eth.getMACAddress(m);
-    Serial.printf("INFO init=%d rev=0x%02X mac=%02x:%02x:%02x:%02x:%02x:%02x link=%d ip=%u.%u.%u.%u pend=%u\n",
+    Serial.printf("INFO init=%d rev=0x%02X mac=%02x:%02x:%02x:%02x:%02x:%02x link=%d ip=%u.%u.%u.%u pend=%u "
+                  "probe_ok=%d probe_ms=%lu\n",
                   eth.isInitialized(), eth.getRevision(), m[0], m[1], m[2], m[3], m[4], m[5],
-                  eth.linkStatus(), myIp[0], myIp[1], myIp[2], myIp[3], eth.available());
+                  eth.linkStatus(), myIp[0], myIp[1], myIp[2], myIp[3], eth.available(), probeOk,
+                  (unsigned long)probeMs);
 }
 
 static void printStats()
@@ -398,6 +404,19 @@ static void pollSerial()
 void setup()
 {
     Serial.begin(115200);
+
+    // Error path: with the chip select on a pin that goes nowhere no ENC28J60
+    // can answer, so begin() has to fail, quickly, instead of hanging. The
+    // real initialization below then shows that begin() can be retried.
+    {
+        ENC28J60Config wrong;
+        wrong.cs_pin = 15;
+        PicoENC28J60 probe(wrong);
+        uint32_t t0 = millis();
+        probeOk = probe.begin();
+        probeMs = millis() - t0;
+    }
+
     bool ok = eth.begin();
     Serial.println("READY bench=1");
     if (!ok) Serial.println("INITFAIL");

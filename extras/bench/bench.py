@@ -31,7 +31,8 @@ SKETCH = os.path.join(REPO, "extras", "bench", "BenchTest")
 PICO_MAC = "02:50:49:43:4f:01"
 PORT_RX, PORT_ECHO, PORT_TX, PEER_PORT = 9999, 9997, 9998, 9998
 SIZES = [10, 18, 100, 400, 800, 1200, 1472]  # UDP payload sizes
-ALL_TESTS = ["init", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong", "txbburst"]
+ALL_TESTS = ["init", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong", "txbburst",
+             "soak", "rxflood"]
 results = []
 
 
@@ -168,6 +169,9 @@ def t_init(p, link_timeout=20):
     rev = num(d, "rev")
     record("init", num(d, "init") == 1 and rev in (2, 4, 5, 6),
            "initialised=%s revision=0x%02X mac=%s" % (d["init"], rev, d["mac"]))
+    record("errpath", num(d, "probe_ok") == 0 and num(d, "probe_ms") < 500 and num(d, "init") == 1,
+           "begin() with the CS pin on an unconnected GPIO %s after %s ms; the real begin() right after worked"
+           % ("failed" if num(d, "probe_ok") == 0 else "SUCCEEDED (wrong)", d["probe_ms"]))
     deadline = time.time() + link_timeout
     link = 0
     while time.time() < deadline:
@@ -212,6 +216,64 @@ def t_rx(p, host_ip, count=200, interval=0.01):
            "bytes after IP datagram: 0B x%s, 4B(FCS) x%s, other x%s" %
            (count, s["bench"], s["dup"], s["stale"], s["gap"], s["bad"], s["frames"],
             s["x0"], s["x4"], s["xo"]))
+
+
+def stream_rx(p, host_ip, count, interval, sizes, pace=True):
+    sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sk.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sk.bind((host_ip, 0))
+    for seq in range(count):
+        plen = sizes[seq % len(sizes)]
+        sk.sendto(make_payload(seq, plen), ("255.255.255.255", PORT_RX))
+        gap = max(interval, (plen + 46) * 8 / 10e6 * 4) if pace else interval
+        if gap:
+            time.sleep(gap)
+    sk.close()
+    time.sleep(0.7)
+    return stats(p)
+
+
+def wait_quiet(p, max_s=30):
+    """Wait until the board stops receiving: whatever the switch had queued has been delivered."""
+    last, still = -1, 0
+    deadline = time.time() + max_s
+    while time.time() < deadline and still < 3:
+        now = num(stats(p), "frames")
+        still = still + 1 if now == last else 0
+        last = now
+        time.sleep(0.4)
+
+
+def t_soak(p, host_ip, count=5000):
+    """A long RX stream at a rate the chip can sustain: nothing may repeat, reorder, get lost or need a recovery."""
+    p.cmd("RESET", "OK")
+    t0 = time.time()
+    s = stream_rx(p, host_ip, count, 0.002, [18, 100, 400, 800, 1200, 1472])
+    good = (num(s, "bench") == count and num(s, "dup") == 0 and num(s, "stale") == 0 and
+            num(s, "gap") == 0 and num(s, "bad") == 0 and num(s, "rxz") == 0 and num(s, "runt") == 0)
+    record("soak", good, "%d frames in %.0f s: ok=%s dup=%s stale=%s gap=%s bad=%s runt=%s recoveries=%s; "
+           "ambient frames=%d" % (count, time.time() - t0, s["bench"], s["dup"], s["stale"], s["gap"], s["bad"],
+                                  s["runt"], s["rxz"], num(s, "frames") - num(s, "bench")))
+
+
+def t_rxflood(p, host_ip, count=3000):
+    """Overload the receiver on purpose. Frames may be lost, but what arrives must be intact and the
+    receiver must work normally afterwards."""
+    p.cmd("RESET", "OK")
+    # Big frames, no pacing: they reach the board back to back at the 10 Mbit/s of
+    # its port, faster than the 3.5 MHz SPI link can drain the 4 KB receive buffer.
+    s = stream_rx(p, host_ip, count, 0, [1472, 1200, 800], pace=False)
+    intact = num(s, "dup") == 0 and num(s, "stale") == 0 and num(s, "bad") == 0
+    got, lost = num(s, "bench"), count - num(s, "bench")
+    ok1 = intact and got > 0 and lost > 0  # lost == 0 would mean the test did not overload anything
+    wait_quiet(p)  # frames queued in the switch keep arriving for a while after the flood
+    p.cmd("RESET", "OK")
+    s2 = stream_rx(p, host_ip, 50, 0.01, [100])
+    ok2 = (num(s2, "bench") == 50 and num(s2, "gap") == 0 and num(s2, "bad") == 0 and
+           num(s2, "dup") == 0 and num(s2, "stale") == 0)
+    record("rxflood", ok1 and ok2, "flood of %d frames: %d received intact, %d lost to overflow, "
+           "dup=%s stale=%s bad=%s, recoveries=%s; clean stream afterwards: %s/50" %
+           (count, got, lost, s["dup"], s["stale"], s["bad"], s["rxz"], s2["bench"]))
 
 
 def t_echo(p, host_ip, pico_ip, count=200):
@@ -346,6 +408,10 @@ def main():
             t_tx(p, host_ip, args.ip, "txlong", 400, 300, 3000)
         if "txburst" in wanted:
             t_tx(p, host_ip, args.ip, "txburst", 200, 100, 0)
+        if "soak" in wanted:
+            t_soak(p, host_ip)
+        if "rxflood" in wanted:
+            t_rxflood(p, host_ip)
         if "txb" in wanted:
             t_txb(p, host_ip, "txb", 100, 300, 3000)
         if "txblong" in wanted:
