@@ -227,6 +227,9 @@ BaseType_t enc28j60_freertos_initialize(struct xNetworkInterface *pxDescriptor)
     eth_cfg->notify.wait = task_wait;
 
     dd->drv = enc28j60_init(eth_cfg);
+    if (dd->drv == NULL) {
+        panic("No ENC28J60 is answering on the SPI pins");
+    }
     pxDescriptor->pvArgument = dd;
     dd->iface = pxDescriptor;
 

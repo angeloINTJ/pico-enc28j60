@@ -49,7 +49,9 @@ typedef struct {
 //! Get a default configuration object
 enc28j60_config *enc28j60_get_default_config();
 
-//! Configure an ENC28J60
+//! Configure an ENC28J60; returns NULL if no ENC28J60 answers on the SPI pins
+//! (check the wiring and the power supply). The configuration stays owned by
+//! the caller in that case.
 enc28j60 *enc28j60_init(enc28j60_config *cfg);
 
 //! Deinitialize an ENC28J60
@@ -100,6 +102,14 @@ uint32_t enc28j60_frame_upload_blk(enc28j60 *eth, size_t size,
 void enc28j60_frame_tx(enc28j60 *eth, uint32_t frame_id);
 void enc28j60_frame_tx_blk(enc28j60 *eth, uint32_t frame_id);
 
+//! Wait for a frame started with enc28j60_frame_tx_blk() to leave the wire
+//! and release its buffer space; this takes the place of
+//! enc28j60_frame_tx_confirm() for the blocking functions. Returns false if the
+//! frame was still being transmitted after timeout_us, in which case the
+//! transmitter is reset.
+bool enc28j60_frame_tx_wait_blk(enc28j60 *eth, uint32_t frame_id,
+                                uint32_t timeout_us);
+
 //! Confirm frame transmission
 void enc28j60_frame_tx_confirm(enc28j60 *eth, uint32_t frame_id);
 
@@ -121,3 +131,11 @@ void enc28j60_frame_discard_blk(enc28j60 *eth, uint32_t rx_info);
 //! Get number of packets in the receive buffer
 uint8_t enc28j60_rx_count(enc28j60 *eth);
 uint8_t enc28j60_rx_count_blk(enc28j60 *eth);
+
+//! Drop everything in the receive buffer and restart the receiver; use it to
+//! recover when a frame header read from the buffer makes no sense
+void enc28j60_rx_reset_blk(enc28j60 *eth);
+
+//! Program a new MAC address; call it before traffic starts, frames being
+//! received while the address changes may be filtered wrongly
+void enc28j60_set_mac_blk(enc28j60 *eth, const uint8_t *mac);

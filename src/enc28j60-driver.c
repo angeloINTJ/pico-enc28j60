@@ -76,10 +76,23 @@ enc28j60_config *enc28j60_get_default_config()
     return cfg;
 }
 
+// The SPI program is loaded once per PIO so that the driver can be initialized
+// again after a failure without running out of instruction memory.
+static struct {
+    bool loaded;
+    uint offset;
+} spi_program[NUM_PIOS];
+
 static void initialize_io(enc28j60_config *cfg)
 {
     // Configure the PIO program
-    uint offset = pio_add_program(cfg->pio, &enc28j60_spi_program);
+    uint pio_idx = pio_get_index(cfg->pio);
+    if (!spi_program[pio_idx].loaded) {
+        spi_program[pio_idx].offset =
+            pio_add_program(cfg->pio, &enc28j60_spi_program);
+        spi_program[pio_idx].loaded = true;
+    }
+    uint offset = spi_program[pio_idx].offset;
     pio_sm_config c = enc28j60_spi_program_get_default_config(offset);
 
     // out pins: MOSI (1 pin)
@@ -135,13 +148,32 @@ static void initialize_io(enc28j60_config *cfg)
     }
 }
 
-static void initialize_enc28j60(enc28j60 *eth, enc28j60_config *cfg)
+//! Returns false if there is no ENC28J60 answering on the SPI pins
+static bool initialize_enc28j60(enc28j60 *eth, enc28j60_config *cfg)
 {
     // Reset, just in case we power cycled the controller, but not the device.
     // We need to wait 1ms to make sure the PHY clock is ready after a soft
     // reset, as per errata.
     system_reset(eth);
     sleep_ms(1);
+
+    // Wait for the oscillator to stabilize before accessing MAC or PHY. A
+    // missing device or wrong wiring never reports ready, so give up instead
+    // of hanging the caller.
+    absolute_time_t deadline = make_timeout_time_ms(100);
+    while (!(reg_read_e_blk(eth, ESTAT) & CLKRDY)) {
+        if (time_reached(deadline)) {
+            return false;
+        }
+    }
+
+    // EREVID is a 5 bit field; all zeros, or anything above that, means that
+    // we are not talking to an ENC28J60 (floating or stuck MISO).
+    bank_set_blk(eth, 3);
+    uint8_t rev = reg_read_e_blk(eth, EREVID);
+    if (rev == 0 || rev > 0x1f) {
+        return false;
+    }
 
     // Set up the receving FIFO, section 6.1 of the manual
     bank_set_blk(eth, 0);
@@ -156,9 +188,11 @@ static void initialize_enc28j60(enc28j60 *eth, enc28j60_config *cfg)
     reg_write_blk(eth, ERXNDL, rx_sz);
     reg_write_blk(eth, ERXNDH, rx_sz >> 8);
 
-    // The initial value of the receive read pointer must be the same as ERXST
-    reg_write_blk(eth, ERXRDPTL, 0);
-    reg_write_blk(eth, ERXRDPTH, 0);
+    // The receive read pointer marks the end of the free space. Per the silicon
+    // errata it must always be odd, so it starts at the end of the buffer
+    // (the byte "before" ERXST in the circular buffer).
+    reg_write_blk(eth, ERXRDPTL, rx_sz);
+    reg_write_blk(eth, ERXRDPTH, rx_sz >> 8);
 
     // Read pointer to the beginning of the receive buffer
     reg_write_blk(eth, ERDPTL, 0);
@@ -172,10 +206,6 @@ static void initialize_enc28j60(enc28j60 *eth, enc28j60_config *cfg)
     // sections 6.3 and 8.0
     bank_set_blk(eth, 1);
     reg_write_blk(eth, ERXFCON, UCEN | CRCEN | MCEN | BCEN);
-
-    // Wait for the oscilator to stabilize before accessing MAC or PHY
-    while (!(reg_read_e_blk(eth, ESTAT) & CLKRDY))
-        ;
 
     // The device does not support automatic duplex negotiation, if plugged to a
     // switch with automatic duplex negotiation it will appear a as 10M
@@ -231,6 +261,7 @@ static void initialize_enc28j60(enc28j60 *eth, enc28j60_config *cfg)
 
     // Enable the receiver
     reg_bits_set_blk(eth, ECON1, RXEN);
+    return true;
 }
 
 enc28j60 *enc28j60_init(enc28j60_config *cfg)
@@ -248,7 +279,13 @@ enc28j60 *enc28j60_init(enc28j60_config *cfg)
     eth->dev_rptr = eth->wptr;
 
     initialize_io(cfg);
-    initialize_enc28j60(eth, cfg);
+    if (!initialize_enc28j60(eth, cfg)) {
+        if (cfg->irq_cb) {
+            gpio_set_irq_enabled(cfg->irq_pin, GPIO_IRQ_EDGE_FALL, false);
+        }
+        free(eth);
+        return NULL;
+    }
 
     if (cfg->notify.notify != NULL && cfg->notify.wait != NULL) {
         enc28j60_cmd_buf_init(eth);
@@ -483,8 +520,17 @@ void enc28j60_frame_tx_blk(enc28j60 *eth, uint32_t frame_id)
     uint16_t start = TX_START(frame_id);
     uint16_t end = TX_END(frame_id);
 
-    // Start of the packet
     bank_set_blk(eth, 0);
+
+    // Silicon errata (rev B1-B7): in half duplex, a transmit abort (excessive
+    // collisions, late collision) can leave the transmit logic stuck with
+    // TXRTS set forever. Reset it before every transmission, then clear the
+    // flags the reset may raise.
+    reg_bits_set_blk(eth, ECON1, TXRST);
+    reg_bits_clear_blk(eth, ECON1, TXRST);
+    reg_bits_clear_blk(eth, EIR, TXERIF | TXIF);
+
+    // Start of the packet
     reg_write_blk(eth, ETXSTL, start);
     reg_write_blk(eth, ETXSTH, start >> 8);
 
@@ -496,12 +542,86 @@ void enc28j60_frame_tx_blk(enc28j60 *eth, uint32_t frame_id)
     reg_bits_set_blk(eth, ECON1, TXRTS);
 }
 
+bool enc28j60_frame_tx_wait_blk(enc28j60 *eth, uint32_t frame_id,
+                                uint32_t timeout_us)
+{
+    absolute_time_t deadline = make_timeout_time_us(timeout_us);
+    bool sent = false;
+    do {
+        if (!(reg_read_e_blk(eth, ECON1) & TXRTS)) {
+            sent = true;
+            break;
+        }
+    } while (!time_reached(deadline));
+
+    if (!sent) {
+        // Still transmitting after the timeout (medium busy or stuck
+        // transmitter): stop it so the buffer space can be reused.
+        reg_bits_set_blk(eth, ECON1, TXRST);
+        reg_bits_clear_blk(eth, ECON1, TXRST);
+        reg_bits_clear_blk(eth, EIR, TXERIF | TXIF);
+    }
+
+    // Release the buffer space either way
+    enc28j60_frame_tx_confirm(eth, frame_id);
+    return sent;
+}
+
+void enc28j60_set_mac_blk(enc28j60 *eth, const uint8_t *mac)
+{
+    bank_set_blk(eth, 3);
+    reg_write_blk(eth, MAADR1, mac[0]);
+    reg_write_blk(eth, MAADR2, mac[1]);
+    reg_write_blk(eth, MAADR3, mac[2]);
+    reg_write_blk(eth, MAADR4, mac[3]);
+    reg_write_blk(eth, MAADR5, mac[4]);
+    reg_write_blk(eth, MAADR6, mac[5]);
+    for (int i = 0; i < 6; ++i) {
+        eth->cfg->mac_addr[i] = mac[i];
+    }
+}
+
+void enc28j60_rx_reset_blk(enc28j60 *eth)
+{
+    uint16_t rx_end = eth->cfg->rx_size - 1;
+
+    // Stop receiving and reset the receive logic
+    reg_bits_clear_blk(eth, ECON1, RXEN);
+    reg_bits_set_blk(eth, ECON1, RXRST);
+    reg_bits_clear_blk(eth, ECON1, RXRST);
+
+    // Empty the buffer: both pointers back to the start state
+    bank_set_blk(eth, 0);
+    reg_write_blk(eth, ERXRDPTL, rx_end);
+    reg_write_blk(eth, ERXRDPTH, rx_end >> 8);
+    reg_write_blk(eth, ERDPTL, 0);
+    reg_write_blk(eth, ERDPTH, 0);
+
+    // The packet counter can only be decremented, one frame at a time
+    bank_set_blk(eth, 1);
+    for (int i = 0; i < 255 && reg_read_e_blk(eth, EPKTCNT) > 0; ++i) {
+        reg_bits_set_blk(eth, ECON2, PKTDEC);
+    }
+
+    bank_set_blk(eth, 0);
+    reg_bits_set_blk(eth, ECON1, RXEN);
+}
+
 void enc28j60_frame_tx_confirm(enc28j60 *eth, uint32_t frame_id)
 {
     eth->dev_rptr = (frame_id & 0xffff) + TX_OVERHEAD_SIZE;
     if (eth->dev_rptr % 2) {
         ++eth->dev_rptr;
     }
+}
+
+//! The value for ERXRDPT after the frame ending right before next_packet has
+//! been consumed. Silicon errata (rev B1-B7): the receive hardware may corrupt
+//! the receive buffer if ERXRDPT is even, so it is set to next_packet - 1,
+//! wrapping to the end of the buffer (the receive buffer starts at 0).
+static uint16_t rx_read_pointer(const enc28j60 *eth, uint16_t next_packet)
+{
+    return next_packet == 0 ? eth->cfg->rx_size - 1 : next_packet - 1;
 }
 
 uint32_t enc28j60_frame_rx_info(enc28j60 *eth)
@@ -532,7 +652,7 @@ uint32_t enc28j60_frame_rx_info_blk(enc28j60 *eth)
     uint8_t header[6] = { 0 };
     mem_read_blk(eth, 6, header);
     ret = (((uint32_t)header[1]) << 24) | (((uint32_t)header[0]) << 16);
-    ret = (((uint32_t)header[3]) << 8) | header[2];
+    ret |= (((uint32_t)header[3]) << 8) | header[2];
     return ret;
 }
 
@@ -591,9 +711,10 @@ void enc28j60_frame_rx_blk(enc28j60 *eth, uint32_t rx_info, void *buffer)
     // Register bank 0
     bank_set_blk(eth, 0);
 
-    // RX read pointer
-    reg_write_blk(eth, ERXRDPTL, next_packet);
-    reg_write_blk(eth, ERXRDPTH, next_packet >> 8);
+    // RX read pointer; it frees the space up to the end of this frame
+    uint16_t rdpt = rx_read_pointer(eth, next_packet);
+    reg_write_blk(eth, ERXRDPTL, rdpt);
+    reg_write_blk(eth, ERXRDPTH, rdpt >> 8);
 
     // RBM read pointer
     reg_write_blk(eth, ERDPTL, next_packet);
@@ -632,9 +753,10 @@ void enc28j60_frame_discard_blk(enc28j60 *eth, uint32_t rx_info)
     // Register bank 0
     bank_set_blk(eth, 0);
 
-    // RX read pointer
-    reg_write_blk(eth, ERXRDPTL, next_packet);
-    reg_write_blk(eth, ERXRDPTH, next_packet >> 8);
+    // RX read pointer; it frees the space up to the end of this frame
+    uint16_t rdpt = rx_read_pointer(eth, next_packet);
+    reg_write_blk(eth, ERXRDPTL, rdpt);
+    reg_write_blk(eth, ERXRDPTH, rdpt >> 8);
 
     // RBM read pointer
     reg_write_blk(eth, ERDPTL, next_packet);

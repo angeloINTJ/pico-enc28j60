@@ -27,6 +27,7 @@ acknowledgeInterrupts	KEYWORD2
 setInterruptCallback	KEYWORD2
 poll	KEYWORD2
 isInitialized	KEYWORD2
+getDriverHandle	KEYWORD2
 #######################################
 # Constants (LITERAL1)
 #######################################
@@ -35,3 +36,4 @@ INT_TX_COMPLETE	LITERAL1
 INT_PACKET_RX	LITERAL1
 INT_RX_ERROR	LITERAL1
 INT_GLOBAL	LITERAL1
+MAX_FRAME_SIZE	LITERAL1

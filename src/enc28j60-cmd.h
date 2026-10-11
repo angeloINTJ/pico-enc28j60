@@ -5,6 +5,7 @@
 
 #include "pico/enc28j60-driver.h"
 
+#include <pico/time.h>
 #include <stdint.h>
 
 // Section 4.2 of the manual
@@ -219,6 +220,9 @@
 // EIR: Transmit flag
 #define TXIF 0x8
 
+// EIR: Transmit error flag
+#define TXERIF 0x2
+
 // EIR: Receive error flag
 #define RXERIF 0x1
 
@@ -249,13 +253,19 @@
 // ECON1: Transmit request to send
 #define TXRTS 0x8
 
+// ECON1: Transmit logic reset
+#define TXRST 0x80
+
+// ECON1: Receive logic reset
+#define RXRST 0x40
+
 // ECON2: Packet Decrement
 #define PKTDEC 0x40
 
 // PHY registers
 #define PHCON1 0x0
 #define PHSTAT1 0x1
-#define PHID1 0x3
+#define PHID1 0x2
 #define PHID2 0x3
 #define PHCON2 0x10
 #define PHSTAT2 0x11
@@ -331,6 +341,17 @@ static inline void reg_write_blk(enc28j60 *eth, uint8_t addr, uint8_t data)
     enc28j60_execute_blocking(eth, cmd, NULL, NULL);
 }
 
+//! Wait for the MII management interface to go idle; changes the selected
+//! bank. A missing or crashed device would look busy forever, so give up
+//! after 10 ms (a PHY access takes about 10 us).
+static inline void mii_wait_blk(enc28j60 *eth)
+{
+    bank_set_blk(eth, 3);
+    absolute_time_t deadline = make_timeout_time_ms(10);
+    while ((reg_read_m_blk(eth, MISTAT) & BUSY) && !time_reached(deadline))
+        ;
+}
+
 //! Read a PHY register; changes the selected bank
 static inline uint16_t reg_read_p_blk(enc28j60 *eth, uint8_t addr)
 {
@@ -340,9 +361,7 @@ static inline uint16_t reg_read_p_blk(enc28j60 *eth, uint8_t addr)
     reg_write_blk(eth, MICMD, MIIRD);
 
     // Wait for MAC to fetch the values from the PHY
-    bank_set_blk(eth, 3);
-    while (reg_read_m_blk(eth, MISTAT) & BUSY)
-        ;
+    mii_wait_blk(eth);
 
     // Clear the command and read out the data
     bank_set_blk(eth, 2);
@@ -366,9 +385,7 @@ static inline void reg_write_p_blk(enc28j60 *eth, uint8_t addr, uint16_t data)
     reg_write_blk(eth, MIWRH, data >> 8);
 
     // Wait for MAC to write the values to the PHY
-    bank_set_blk(eth, 3);
-    while (reg_read_m_blk(eth, MISTAT) & BUSY)
-        ;
+    mii_wait_blk(eth);
 }
 
 //! Write memory; changes the selected bank
