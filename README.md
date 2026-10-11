@@ -81,15 +81,17 @@ The Arduino library (`PicoENC28J60`) targets the Raspberry Pi Pico (RP2040) with
 
 ### Installation
 
-The library is not in the Arduino Library Manager and there is no GitHub Release
-yet, so install it from this repository:
+Install it from this repository; the Arduino Library Manager does not list it yet:
 
- * Arduino IDE: *Code > Download ZIP* on GitHub, then *Sketch > Include Library >
-   Add .ZIP Library*.
+ * Arduino IDE: download `PicoENC28J60-<version>.zip` from the
+   [latest release](https://github.com/angeloINTJ/pico-enc28j60/releases/latest),
+   then *Sketch > Include Library > Add .ZIP Library*.
  * From a clone, which makes it easy to stay up to date: clone the repository
    into your Arduino libraries folder (usually `~/Arduino/libraries`).
  * PlatformIO with the arduino-pico core:
-   `lib_deps = https://github.com/angeloINTJ/pico-enc28j60`
+   `lib_deps = https://github.com/angeloINTJ/pico-enc28j60.git#v1.1.0`
+
+What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 
 ### Quick start: a web page that toggles the LED
 
@@ -358,33 +360,42 @@ See the examples/ folder:
 
 ---
 
-## Credits
--------
+## Repository layout
+-----------------
 
-This library is based on pico-enc28j60 by Lukasz Janyst (lukasz@jany.st)
-- Original repository: https://github.com/ljanyst/pico-enc28j60
-- Licensed under MIT License
-
-The PIO SPI implementation and ENC28J60 register-level driver are entirely
-Lukasz's work. This repository adds:
-- Arduino-style C++ class wrapper (PicoENC28J60)
-- Flexible pin configuration including separate CS pin support
-- Arduino build system integration
-- Examples and documentation for Arduino users
-
-**All original C driver code, PIO programs, FreeRTOS integration, and documentation are preserved.**
+| Folder | Contents |
+|--------|----------|
+| `src/` | The library: the Arduino classes (`PicoENC28J60.*`, `PicoENC28J60lwIP.h`) and the C driver they are built on (`enc28j60-*`, `pico/`) |
+| `examples/` | Arduino sketches |
+| `extras/bench/` | Tests that run on the hardware; not compiled by the Arduino IDE |
+| `freertos/` | The FreeRTOS+TCP driver of the original project, outside `src/` so that the Arduino IDE does not compile it |
+| `imgs/` | Photographs used by this README |
 
 ---
 
 ## References
-==========
+----------
 
  * [ENC28J60 Data Sheet](https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/DataSheets/39662e.pdf)
  * [ENC28J60 Errata](https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/Errata/80349c.pdf)
 
 ---
 
-## License
--------
+## Credits and license
+-------------------
 
-MIT License - See LICENSE file for details.
+PicoENC28J60 is a fork of [pico-enc28j60](https://github.com/ljanyst/pico-enc28j60)
+by **Lukasz Janyst**, and his work is the foundation of everything here: the PIO
+program that speaks SPI to the chip, the ENC28J60 driver in C, the FreeRTOS+TCP
+driver, the documentation of that driver in this README and the photographs in
+`imgs/`. They are included with his copyright notice and under the MIT license he
+published them with. The upstream history, 52 commits, is in his repository.
+
+**Ângelo Moisés Alves** ([@angeloINTJ](https://github.com/angeloINTJ)) adapted it
+to the Arduino IDE: the C++ classes, the lwIP network interface, the examples, the
+on-hardware test bench, and the changes to the original driver that these needed
+(a chip select pin of its own, a driver that fails instead of hanging when no chip
+answers, fixes in the blocking receive and transmit paths, the INT pin).
+
+[NOTICE.md](NOTICE.md) says who wrote what, file by file. The project is released
+under the [MIT license](LICENSE), which carries the copyright notice of both.
