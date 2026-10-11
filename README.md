@@ -121,7 +121,7 @@ void setup() {
         Serial.println("No ENC28J60 found: check the wiring and the 3.3 V supply");
         while (true) delay(1000);
     }
-    Serial.printf("revision 0x%02X, link %s\n", eth.getRevision(), eth.linkStatus() ? "up" : "down");
+    Serial.printf("revision 0x%02X\n", eth.getRevision());
 }
 
 void loop() {
@@ -280,7 +280,8 @@ void setup_network()
    address and buffer split live in `ENC28J60Config`.
  * `bool begin()`, `bool begin(const ENC28J60Config&)` - initialize. Returns
    `false` if no ENC28J60 answers, and can be called again.
- * `bool linkStatus()`, `uint8_t getRevision()`
+ * `bool linkStatus()` - the link takes a second or two to come up after `begin()`.
+ * `uint8_t getRevision()`
  * `void getMACAddress(uint8_t* mac) const`, `void setMACAddress(const uint8_t* mac)`
  * `bool sendFrame(const uint8_t* frame, uint16_t len)` - blocking, up to
    `MAX_FRAME_SIZE` (1514) bytes, without the FCS.

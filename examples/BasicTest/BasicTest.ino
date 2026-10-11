@@ -45,9 +45,14 @@ void setup() {
     }
     Serial.println();
     
-    // Check link status
-    Serial.print("Link Status: ");
-    Serial.println(eth.linkStatus() ? "UP" : "DOWN");
+    // The link takes a second or two to come up after begin()
+    Serial.print("Waiting for link");
+    for (uint32_t t = millis(); !eth.linkStatus() && millis() - t < 5000;) {
+        Serial.print('.');
+        delay(250);
+    }
+    Serial.print("\nLink Status: ");
+    Serial.println(eth.linkStatus() ? "UP" : "DOWN (is the cable plugged in?)");
     
     Serial.println("\nStarting main loop...");
     Serial.println("Connect Ethernet cable and watch for packets.");

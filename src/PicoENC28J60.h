@@ -70,6 +70,7 @@ public:
      * @brief Initialize the ENC28J60 with the configuration given to the constructor
      * @return true on success; false if no ENC28J60 answers (check the wiring and
      *         the 3.3 V supply). It is safe to call begin() again after a failure.
+     *         The Ethernet link comes up a second or two later, see linkStatus().
      */
     bool begin();
 
