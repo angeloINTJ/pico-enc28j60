@@ -1,3 +1,6 @@
+// Copyright 2026 Ângelo Moisés Alves
+// Licensed under the MIT license, see the LICENSE file for details.
+
 /*
  * BenchTest - on-hardware self-test for PicoENC28J60.
  *

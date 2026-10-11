@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ângelo Moisés Alves
+# Licensed under the MIT license, see the LICENSE file for details.
 """On-hardware self-test for PicoENC28J60.
 
 Runs against a Pico flashed with extras/bench/BenchTest and wired to an

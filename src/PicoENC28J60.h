@@ -1,3 +1,6 @@
+// Copyright 2026 Ângelo Moisés Alves
+// Licensed under the MIT license, see the LICENSE file for details.
+
 #ifndef PICO_ENC28J60_H
 #define PICO_ENC28J60_H
 

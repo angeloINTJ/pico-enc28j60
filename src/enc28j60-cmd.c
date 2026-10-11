@@ -1,4 +1,5 @@
 // Copyright 2024 Lukasz Janyst <lukasz@jany.st>
+// Modifications copyright 2026 Ângelo Moisés Alves
 // Licensed under the MIT license, see the LICENSE file for details.
 
 #include "enc28j60-cmd.h"

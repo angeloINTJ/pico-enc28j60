@@ -1,3 +1,6 @@
+// Copyright 2026 Ângelo Moisés Alves
+// Licensed under the MIT license, see the LICENSE file for details.
+
 /*
  * WebServerLedToggle - switch the onboard LED from a button on a web page.
  *

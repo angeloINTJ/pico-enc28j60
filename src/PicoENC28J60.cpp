@@ -1,3 +1,6 @@
+// Copyright 2026 Ângelo Moisés Alves
+// Licensed under the MIT license, see the LICENSE file for details.
+
 #include "PicoENC28J60.h"
 
 #include <hardware/gpio.h>

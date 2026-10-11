@@ -1,4 +1,5 @@
 ; Copyright 2024 Lukasz Janyst <lukasz@jany.st>
+; Modifications copyright 2026 Ângelo Moisés Alves
 ; Licensed under the MIT license, see the LICENSE file for details.
 ; Modified to support separate CS pin
 
@@ -10,7 +11,10 @@
 ; in bits, while the second is the size of the RX payload to be clocked in from
 ; the slave. We use this extra information to time the termination of each
 ; command and do not actually transmit it. This approach enables efficient DMA
-; without us having to care to manually manipulate the slave select pins.
+; without us having to care to manually manipulate the slave select pins. It
+; would have been more efficient to specify these sizes in bytes or even use two
+; bytes for each size field, but I haven't found a way for PIO to do that
+; without complicating the encoding of the payload.
 ;
 ; There's always at least one TX byte - the command header - as described in
 ; chapter 4.2 of the manual. Register write commands have one byte of payload

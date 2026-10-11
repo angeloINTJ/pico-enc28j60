@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ângelo Moisés Alves
+# Licensed under the MIT license, see the LICENSE file for details.
 """HTTP test for examples/WebServerLedToggle running on a real board.
 
     python3 extras/bench/webtest.py --ip 192.168.3.39              # about a minute
