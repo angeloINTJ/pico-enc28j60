@@ -1,0 +1,30 @@
+# Build outputs
+build/
+*.uf2
+*.elf
+*.bin
+*.hex
+*.map
+*.dis
+
+# Entries inherited from upstream (ljanyst/pico-enc28j60)
+.cache
+compile_commands.json
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Backups, patches and scratch files
+*.bak
+*.orig
+*.rej
+__pycache__/
+*.pyc
+
+# Local-only scripts and secrets must never be committed
+teste.py
+.env

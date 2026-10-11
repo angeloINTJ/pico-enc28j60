@@ -6,7 +6,6 @@
 #######################################
 PicoENC28J60	KEYWORD1
 ENC28J60Config	KEYWORD1
-EthernetFrame	KEYWORD1
 #######################################
 # Methods and Functions (KEYWORD2)
 #######################################
@@ -28,7 +27,6 @@ acknowledgeInterrupts	KEYWORD2
 setInterruptCallback	KEYWORD2
 poll	KEYWORD2
 isInitialized	KEYWORD2
-getDriverHandle	KEYWORD2
 #######################################
 # Constants (LITERAL1)
 #######################################
