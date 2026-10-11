@@ -9,8 +9,9 @@ target_sources(pico_enc28j60_driver INTERFACE
   ${CMAKE_CURRENT_LIST_DIR}/enc28j60-cmd.c
 )
 
+# <pico/enc28j60-driver.h> lives in src/pico
 target_include_directories(pico_enc28j60_driver_headers INTERFACE
-  ${CMAKE_CURRENT_LIST_DIR}/include
+  ${CMAKE_CURRENT_LIST_DIR}
 )
 
 target_link_libraries(
@@ -27,8 +28,8 @@ target_sources(pico_enc28j60_freertos_driver INTERFACE
   ${CMAKE_CURRENT_LIST_DIR}/../freertos/enc28j60-freertos-driver.c
 )
 
+# <pico/enc28j60-freertos-driver.h> lives in freertos/pico
 target_include_directories(pico_enc28j60_freertos_driver_headers INTERFACE
-  ${CMAKE_CURRENT_LIST_DIR}/include
   ${CMAKE_CURRENT_LIST_DIR}/../freertos
 )
 

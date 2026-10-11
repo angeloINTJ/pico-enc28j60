@@ -255,7 +255,7 @@ bool enc28j60_cmd_buf_encode_cmd(enc28j60 *eth, uint32_t cmd, const void *src)
         b->tx_ctrl[b->tx_ctrl_idx].data = b->tx_buf_ptr;
     }
 
-    for (int i = 0; i < tx_sz; ++i) {
+    for (size_t i = 0; i < tx_sz; ++i) {
         *b->tx_buf_ptr++ = data[i];
     }
 

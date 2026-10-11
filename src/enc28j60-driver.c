@@ -28,6 +28,7 @@ static irq_arg_chain irq_args;
 
 static void __time_critical_func(irq_handler)(uint gpio, uint32_t events)
 {
+    (void)events;
     irq_arg_chain *cur = irq_args.next;
     while (cur) {
         if (gpio == cur->gpio) {
@@ -238,7 +239,7 @@ enc28j60 *enc28j60_init(enc28j60_config *cfg)
         panic("Missing ENC28J60 config");
     }
 
-    enc28j60 *eth = calloc(1, sizeof(enc28j60_config));
+    enc28j60 *eth = calloc(1, sizeof(enc28j60));
     if (eth == NULL) {
         panic("Failed to allocate memory for ENC28J60 object");
     }
@@ -270,6 +271,9 @@ bool enc28j60_link_status_blk(enc28j60 *eth)
 
 void enc28j60_deinit(enc28j60 *eth)
 {
+    // Not implemented: the PIO program and the state machine stay in use, so
+    // the driver cannot be torn down and initialized again.
+    (void)eth;
 }
 
 uint8_t enc28j60_irq_flags_blk(enc28j60 *eth)
