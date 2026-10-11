@@ -313,13 +313,14 @@ static void printInfo()
 static void printStats()
 {
     Serial.printf("STAT frames=%lu bench=%lu dup=%lu stale=%lu gap=%lu bad=%lu arp=%lu icmp=%lu echo=%lu "
-                  "other=%lu runt=%lu x0=%lu x4=%lu xo=%lu rxz=%lu tx=%lu txf=%lu pend=%u\n",
+                  "other=%lu runt=%lu x0=%lu x4=%lu xo=%lu rxz=%lu tx=%lu txf=%lu pend=%u rxrst=%lu rxdrop=%lu\n",
                   (unsigned long)st.frames, (unsigned long)st.bench, (unsigned long)st.dup,
                   (unsigned long)st.stale, (unsigned long)st.gap, (unsigned long)st.bad,
                   (unsigned long)st.arp, (unsigned long)st.icmp, (unsigned long)st.echo,
                   (unsigned long)st.other, (unsigned long)st.runt, (unsigned long)st.extra0,
                   (unsigned long)st.extra4, (unsigned long)st.extraX, (unsigned long)st.rxz,
-                  (unsigned long)st.tx, (unsigned long)st.txf, eth.available());
+                  (unsigned long)st.tx, (unsigned long)st.txf, eth.available(),
+                  (unsigned long)eth.stats().rx_resets, (unsigned long)eth.stats().rx_dropped);
 }
 
 // TX  <count> <payload length> <gap in microseconds>: unicast stream to the last echo peer.

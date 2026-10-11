@@ -194,6 +194,16 @@ public:
     //! The driver has been initialized successfully
     bool isInitialized() const { return _initialized; }
 
+    //! Counters for diagnostics; they only ever grow
+    struct Stats {
+        uint32_t rx_frames;    //!< frames returned by receiveFrame()
+        uint32_t rx_dropped;   //!< frames dropped because they did not fit the caller's buffer
+        uint32_t rx_resets;    //!< times the receiver was reset because of a bad frame header
+        uint32_t tx_frames;    //!< frames sent
+        uint32_t tx_failures;  //!< sendFrame() calls that failed
+    };
+    const Stats& stats() const { return _stats; }
+
     /**
      * @brief The handle of the underlying C driver (struct enc28j60 *)
      *
@@ -215,6 +225,7 @@ private:
     bool _initialized;
     void (*_irq_callback)(void*);
     void* _irq_user_data;
+    Stats _stats = {};
 
     void _hardwareReset();
     bool _readRxInfo(uint32_t* rx_info);

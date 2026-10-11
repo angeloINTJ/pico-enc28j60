@@ -143,12 +143,18 @@ bool PicoENC28J60::sendFrame(const uint8_t* frame, uint16_t len) {
     // Upload the frame to the transmit area; this fails if there is no room
     uint32_t frame_id = enc28j60_frame_upload_blk(eth, len, frame);
     if (frame_id == ENC28J60_INVALID_FRAME_ID) {
+        _stats.tx_failures++;
         return false;
     }
 
     // Send it and wait until it is out, which also releases the buffer space
     enc28j60_frame_tx_blk(eth, frame_id);
-    return enc28j60_frame_tx_wait_blk(eth, frame_id, TX_TIMEOUT_US);
+    if (!enc28j60_frame_tx_wait_blk(eth, frame_id, TX_TIMEOUT_US)) {
+        _stats.tx_failures++;
+        return false;
+    }
+    _stats.tx_frames++;
+    return true;
 }
 
 uint8_t PicoENC28J60::available() {
@@ -172,6 +178,7 @@ bool PicoENC28J60::_readRxInfo(uint32_t* rx_info) {
                  next < _config.rx_buffer_size && (next & 1) == 0;
     if (!valid) {
         enc28j60_rx_reset_blk(eth);
+        _stats.rx_resets++;
         return false;
     }
 
@@ -194,12 +201,14 @@ uint16_t PicoENC28J60::receiveFrame(uint8_t* buffer, uint16_t max_len) {
     if (frame_len > max_len) {
         // Does not fit the caller's buffer: drop it
         enc28j60_frame_discard_blk(eth, rx_info);
+        _stats.rx_dropped++;
         return 0;
     }
 
     // Read the frame without its FCS; the pointers still move to the next frame
     rx_info = (rx_info & 0xFFFF0000u) | frame_len;
     enc28j60_frame_rx_blk(eth, rx_info, buffer);
+    _stats.rx_frames++;
     return frame_len;
 }
 
