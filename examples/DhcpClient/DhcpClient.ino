@@ -241,7 +241,8 @@ void sendDhcpDiscover() {
     uint16_t flen = 14+20+8+300;
     g_eth.sendFrame(g_txBuffer, flen);
     Serial.println("[DHCP] >>> DISCOVER sent xid=0x" + String(g_xid, HEX));
-    g_xid++; g_dhcpState = ST_OFFER;
+    // DO NOT increment g_xid - keep same xid for entire DHCP exchange
+    g_dhcpState = ST_OFFER;
     g_lastDhcpTime = millis(); g_dhcpRetries++;
 }
 
@@ -336,7 +337,8 @@ void sendDhcpRequest() {
     uint16_t flen = 14+20+8+300;
     g_eth.sendFrame(g_txBuffer, flen);
     Serial.println("[DHCP] REQUEST sent with Server ID: " + String(g_serverIp>>24) + "." + String((g_serverIp>>16)&0xFF) + "." + String((g_serverIp>>8)&0xFF) + "." + String(g_serverIp&0xFF));
-    g_xid++; g_dhcpState = ST_ACK; g_lastDhcpTime = millis(); g_dhcpRetries++;
+    // DO NOT increment g_xid - keep same xid for entire DHCP exchange
+    g_dhcpState = ST_ACK; g_lastDhcpTime = millis(); g_dhcpRetries++;
 }
 
 void buildDhcp(uint8_t* dhcp, uint8_t msgType, uint32_t reqIp, uint32_t servId, uint32_t xid) {
