@@ -1,35 +1,30 @@
+/*
+ * AdvancedTest - interrupt-driven reception, custom pins and a custom MAC.
+ *
+ * Wire the ENC28J60 INT pin to GP6 (ENC28J60Config::irq_pin). The chip pulls
+ * that line low when a frame arrives, the link changes or the receive buffer
+ * overflows. loop() asks interruptPending() - a read of that pin, no SPI
+ * traffic - and talks to the chip only when the answer is yes.
+ *
+ * The same sketch works without the wire: set irq_pin to -1 and
+ * interruptPending() looks at the chip instead.
+ *
+ * Frames are printed as they come, so on a busy network this is chatty. Every
+ * 5 seconds the sketch also sends a test frame.
+ */
 #include <PicoENC28J60.h>
 
-// Advanced example with interrupt-driven operation
-// Requires connecting ENC28J60 INT pin to a Pico GPIO
-
-PicoENC28J60* eth = nullptr;  // Will be initialized in setup() with custom config
-
-volatile bool packet_flag = false;
-volatile bool link_flag = false;
-volatile bool tx_flag = false;
-volatile bool rx_err_flag = false;
-
-void irqHandler(void* userData) {
-    PicoENC28J60* eth = static_cast<PicoENC28J60*>(userData);
-    uint8_t flags = eth->getInterruptFlags();
-    
-    if (flags & PicoENC28J60::INT_PACKET_RX) packet_flag = true;
-    if (flags & PicoENC28J60::INT_LINK_CHANGE) link_flag = true;
-    if (flags & PicoENC28J60::INT_TX_COMPLETE) tx_flag = true;
-    if (flags & PicoENC28J60::INT_RX_ERROR) rx_err_flag = true;
-    
-    // Acknowledge immediately in ISR
-    eth->acknowledgeInterrupts(flags);
-}
+PicoENC28J60* eth = nullptr;  // created in setup() with a custom config
 
 void setup() {
     Serial.begin(115200);
-    while (!Serial) delay(10);
-    
+    for (uint32_t t = millis(); !Serial && millis() - t < 3000;) {
+        delay(10);  // give a serial monitor a moment, but do not depend on one
+    }
+
     Serial.println("\n=== PicoENC28J60 Advanced Test ===");
     Serial.println("Interrupt-driven mode with custom MAC");
-    
+
     // Create custom configuration
     ENC28J60Config config;
     config.mosi_pin = 3;   // GP3 - SI (MOSI)
@@ -38,30 +33,25 @@ void setup() {
     config.cs_pin = 5;     // GP5 - CS
     config.rst_pin = 7;    // GP7 - RST
     config.irq_pin = 6;    // GP6 - INT (connect ENC28J60 INT to GP6)
-    
+
     // Custom MAC address (locally administered)
     uint8_t my_mac[6] = {0x02, 0x42, 0xAC, 0x11, 0x00, 0x02};
     memcpy(config.mac_addr, my_mac, 6);
-    
-    // Initialize with custom config
+
     eth = new PicoENC28J60(config);
-    
-    // Set interrupt callback before begin()
-    eth->setInterruptCallback(irqHandler, eth);
-    
-    // Initialize
+
     Serial.println("Initializing ENC28J60...");
     if (!eth->begin()) {
         Serial.println("ERROR: Failed to initialize ENC28J60!");
         while (1) delay(1000);
     }
-    
+
     Serial.println("ENC28J60 initialized successfully!");
-    
+
     // Show info
     uint8_t rev = eth->getRevision();
     Serial.printf("Revision: 0x%02X\n", rev);
-    
+
     uint8_t mac[6];
     eth->getMACAddress(mac);
     Serial.print("MAC: ");
@@ -71,49 +61,42 @@ void setup() {
         if (i < 5) Serial.print(":");
     }
     Serial.println();
-    
+
     Serial.printf("Link: %s\n", eth->linkStatus() ? "UP" : "DOWN");
     Serial.println("Interrupt mode enabled on GP6");
     Serial.println("\nMain loop running...");
 }
 
 void loop() {
-    // Handle interrupts via flags (set in ISR)
-    if (packet_flag) {
-        packet_flag = false;
+    if (eth->interruptPending()) {
+        // Reads the flags and masks the INT pin until they are acknowledged, so
+        // nothing that arrives while we work is lost
+        uint8_t flags = eth->getInterruptFlags();
+
+        if (flags & PicoENC28J60::INT_LINK_CHANGE) {
+            Serial.printf("\n[LINK] Link status: %s\n", eth->linkStatus() ? "UP" : "DOWN");
+        }
+        if (flags & PicoENC28J60::INT_RX_ERROR) {
+            Serial.println("\n[ERROR] Receive buffer overflow: frames were lost");
+        }
+
         processPackets();
+
+        eth->acknowledgeInterrupts(flags);
     }
-    
-    if (link_flag) {
-        link_flag = false;
-        Serial.printf("\n[LINK] Link status: %s\n", eth->linkStatus() ? "UP" : "DOWN");
-    }
-    
-    if (tx_flag) {
-        tx_flag = false;
-        Serial.println("[TX] Frame transmitted");
-    }
-    
-    if (rx_err_flag) {
-        rx_err_flag = false;
-        Serial.println("[ERROR] RX error detected");
-    }
-    
+
     // Send periodic test frames
     static uint32_t last_send = 0;
     if (millis() - last_send > 5000) {
         last_send = millis();
         sendTestFrame();
     }
-    
-    // Small delay to prevent busy loop
-    delay(1);
 }
 
 void processPackets() {
     uint8_t buffer[1520];
     
-    while (eth->hasPacket()) {
+    while (eth->available()) {
         uint16_t len = eth->receiveFrame(buffer, sizeof(buffer));
         if (len == 0) break;
         

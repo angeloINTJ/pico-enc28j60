@@ -29,7 +29,7 @@ struct ENC28J60Config {
     int8_t sclk_pin = 2;  // GP2 - SCK
     int8_t cs_pin = 5;    // GP5 - CS (separate from SCK)
     int8_t rst_pin = 7;   // GP7 - RST
-    int8_t irq_pin = -1;  // Optional interrupt pin (-1 = polling mode)
+    int8_t irq_pin = -1;  // GPIO wired to the chip's INT pin (-1 = not wired, the sketch polls)
 
     // MAC address: locally administered unicast. Give every device on the
     // network its own.
@@ -145,38 +145,73 @@ public:
     void discardFrame();
 
     /**
-     * @brief Read the interrupt flags (EIR)
+     * @brief Has the chip asked for attention since the last call?
      *
-     * Meant for an interrupt callback, which must follow up with
-     * acknowledgeInterrupts(). In polling mode use hasPacket() and friends.
+     * Interrupt-driven operation in three steps. Put the INT pin in
+     * ENC28J60Config::irq_pin, then in loop():
+     *
+     *     if (eth.interruptPending()) {
+     *         uint8_t flags = eth.getInterruptFlags();
+     *         while (eth.available()) { len = eth.receiveFrame(buf, sizeof(buf)); ... }
+     *         if (flags & PicoENC28J60::INT_LINK_CHANGE) { ... eth.linkStatus() ... }
+     *         eth.acknowledgeInterrupts(flags);
+     *     }
+     *
+     * With the pin wired this costs no SPI traffic: it looks at the INT line, so
+     * a loop that finds nothing to do leaves the chip alone. It stays true while
+     * the line is low, so an event cannot be missed even if its edge was.
+     * Without irq_pin it looks at the chip's flags instead (one SPI read), so the
+     * same loop works on a board that has no INT wire.
+     *
+     * The chip raises the line for a received frame, a link change and a receive
+     * overflow. It does not for a finished transmission, because sendFrame()
+     * waits for that itself.
+     */
+    bool interruptPending();
+
+    /**
+     * @brief Read the interrupt flags (EIR) and mask the INT pin
+     *
+     * The sequence the datasheet prescribes, which cannot lose an event that
+     * arrives while you work: read the flags here, handle them, then call
+     * acknowledgeInterrupts() with the same flags. Until then the pin stays
+     * quiet.
      */
     uint8_t getInterruptFlags();
 
-    //! A frame is waiting in the receive buffer
+    //! Read the interrupt flags without masking the INT pin, for code that only looks
+    uint8_t peekInterruptFlags();
+
+    //! A frame is waiting in the receive buffer (only looks: the INT pin is not masked)
     bool hasPacket();
 
-    //! A transmission completed (not acknowledged automatically by sendFrame())
+    //! A transmission completed (only looks; sendFrame() clears the flag when it starts)
     bool hasTXComplete();
 
-    //! The link went up or down since the last acknowledgeInterrupts(INT_LINK_CHANGE)
+    //! The link went up or down since the last acknowledgeInterrupts(INT_LINK_CHANGE) (only looks)
     bool hasLinkChange();
 
-    //! The receive buffer overflowed or a frame was dropped
+    //! The receive buffer overflowed or a frame was dropped (only looks)
     bool hasRXError();
 
     /**
-     * @brief Acknowledge and clear interrupt flags
-     * @param flags INT_* flags to clear
+     * @brief Clear interrupt flags and unmask the INT pin
+     * @param flags INT_* flags to clear, normally what getInterruptFlags() returned.
+     *        A flag that is left set raises the line again at once.
      */
     void acknowledgeInterrupts(uint8_t flags);
 
     /**
-     * @brief Register a function to call on a chip interrupt
+     * @brief Register a function to call when the INT line falls
      *
-     * Must be called before begin(), and needs irq_pin to be set when using the
-     * hardware interrupt. The callback runs in interrupt context there; it should
-     * read the flags with getInterruptFlags() and clear them with
-     * acknowledgeInterrupts().
+     * Call it before begin(); it needs irq_pin. The function runs in interrupt
+     * context, so keep it to a few instructions and do not call into this class
+     * from it: the chip is reached over a single PIO state machine, and an
+     * interrupt in the middle of a transfer of the main program would corrupt
+     * both. Set a flag, or wake something up, and do the talking to the chip in
+     * loop() (interruptPending() is made for that).
+     *
+     * Without irq_pin, poll() calls it from loop() instead.
      *
      * @param callback Function to call (nullptr to disable)
      * @param user_data Passed to the callback
@@ -184,13 +219,16 @@ public:
     void setInterruptCallback(void (*callback)(void*), void* user_data = nullptr);
 
     /**
-     * @brief Poll for interrupt conditions
+     * @brief Run the interrupt callback from loop() when there is no INT wire
      *
-     * Only useful together with setInterruptCallback() when the INT pin is not
-     * wired: it calls the callback, exactly as the interrupt would, when any flag is
-     * set. Without a callback it does nothing; use hasPacket() and friends.
+     * Calls the function given to setInterruptCallback() when interruptPending()
+     * says so, which costs one SPI read. It does nothing when irq_pin is set,
+     * because then the pin calls the function itself.
      */
     void poll();
+
+    //! Number of falling edges seen on the INT pin (0 without irq_pin)
+    uint32_t interruptCount() const { return _irq_count; }
 
     //! The driver has been initialized successfully
     bool isInitialized() const { return _initialized; }
@@ -224,6 +262,9 @@ private:
     ENC28J60Config _config;
     void* _eth;  // internal driver handle
     bool _initialized;
+    bool _irq_attached = false;
+    volatile bool _irq_pending = false;
+    volatile uint32_t _irq_count = 0;
     void (*_irq_callback)(void*);
     void* _irq_user_data;
     Stats _stats = {};

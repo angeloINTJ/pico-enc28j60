@@ -26,6 +26,12 @@ PicoENC28J60::~PicoENC28J60() {
     // enc28j60_deinit() cannot stop the PIO state machine, so the hardware
     // keeps running; this only drops the handle.
     if (_eth) {
+        if (_irq_attached) {
+            // The handler holds a pointer to this object; silence the pin first
+            detachInterrupt(_config.irq_pin);
+            enc28j60_irq_enable_blk(static_cast<enc28j60*>(_eth), 0);
+            _irq_attached = false;
+        }
         enc28j60_deinit(static_cast<enc28j60*>(_eth));
         _eth = nullptr;
     }
@@ -55,6 +61,14 @@ bool PicoENC28J60::begin() {
     if (rx > RX_SIZE_MAX) rx = RX_SIZE_MAX;
     _config.rx_buffer_size = rx;
 
+    // The INT pin shares nothing with the other lines
+    if (_config.irq_pin >= 0 &&
+        (_config.irq_pin == _config.mosi_pin || _config.irq_pin == _config.miso_pin ||
+         _config.irq_pin == _config.sclk_pin || _config.irq_pin == _config.cs_pin ||
+         _config.irq_pin == _config.rst_pin)) {
+        return false;
+    }
+
     _hardwareReset();
 
     // Get default configuration from original library
@@ -70,19 +84,15 @@ bool PicoENC28J60::begin() {
     cfg->mosi_pin = _config.mosi_pin;
     cfg->sclk_pin = _config.sclk_pin;
     cfg->cs_pin = _config.cs_pin;
-    cfg->irq_pin = (_config.irq_pin >= 0) ? _config.irq_pin : _config.rst_pin;
     cfg->dma_irq = 0;
     cfg->rx_size = _config.rx_buffer_size;
     memcpy(cfg->mac_addr, _config.mac_addr, 6);
 
-    // Set up interrupt callback if provided
-    if (_irq_callback) {
-        cfg->irq_cb = _staticIRQHandler;
-        cfg->irq_data = this;
-    } else {
-        cfg->irq_cb = nullptr;
-        cfg->irq_data = nullptr;
-    }
+    // The C driver does not get the interrupt: it would claim the one GPIO
+    // callback that the SDK has per core, which the core of Arduino-Pico needs
+    // for attachInterrupt(). The pin is wired up below through the core instead.
+    cfg->irq_cb = nullptr;
+    cfg->irq_data = nullptr;
 
     // No notification callbacks for Arduino (blocking mode)
     cfg->notify.notify = nullptr;
@@ -98,6 +108,18 @@ bool PicoENC28J60::begin() {
 
     _eth = eth;
     _initialized = true;
+
+    if (_config.irq_pin >= 0) {
+        // INT is active low. The first interruptPending() reports true in any
+        // case, in case the line was already low before the handler existed.
+        _irq_pending = true;
+        pinMode(_config.irq_pin, INPUT_PULLUP);
+        attachInterruptParam(_config.irq_pin, _staticIRQHandler, FALLING, this);
+        _irq_attached = true;
+
+        // sendFrame() waits for the transmission itself, so TXIE stays off
+        enc28j60_irq_enable_blk(eth, INT_PACKET_RX | INT_LINK_CHANGE | INT_RX_ERROR);
+    }
 
     return true;
 }
@@ -223,27 +245,53 @@ void PicoENC28J60::discardFrame() {
 
 uint8_t PicoENC28J60::getInterruptFlags() {
     if (!_initialized) return 0;
-    return enc28j60_irq_flags_blk(static_cast<enc28j60*>(_eth));
+    uint8_t flags = enc28j60_irq_flags_blk(static_cast<enc28j60*>(_eth));
+
+    // The pin is masked now, so no new edge can arrive before the acknowledge,
+    // and one that came earlier is covered by the flags just read. Without this
+    // an edge whose handler ran late would make the next interruptPending()
+    // report an event that has already been served.
+    _irq_pending = false;
+    return flags;
+}
+
+uint8_t PicoENC28J60::peekInterruptFlags() {
+    if (!_initialized) return 0;
+    return enc28j60_irq_status_blk(static_cast<enc28j60*>(_eth));
 }
 
 bool PicoENC28J60::hasPacket() {
-    uint8_t flags = getInterruptFlags();
-    return (flags & INT_PACKET_RX) != 0;
+    return (peekInterruptFlags() & INT_PACKET_RX) != 0;
 }
 
 bool PicoENC28J60::hasTXComplete() {
-    uint8_t flags = getInterruptFlags();
-    return (flags & INT_TX_COMPLETE) != 0;
+    return (peekInterruptFlags() & INT_TX_COMPLETE) != 0;
 }
 
 bool PicoENC28J60::hasLinkChange() {
-    uint8_t flags = getInterruptFlags();
-    return (flags & INT_LINK_CHANGE) != 0;
+    return (peekInterruptFlags() & INT_LINK_CHANGE) != 0;
 }
 
 bool PicoENC28J60::hasRXError() {
-    uint8_t flags = getInterruptFlags();
-    return (flags & INT_RX_ERROR) != 0;
+    return (peekInterruptFlags() & INT_RX_ERROR) != 0;
+}
+
+bool PicoENC28J60::interruptPending() {
+    if (!_initialized) return false;
+
+    if (_config.irq_pin < 0) {
+        // No wire: look at what the chip would have signalled
+        return (peekInterruptFlags() & (INT_PACKET_RX | INT_LINK_CHANGE | INT_RX_ERROR)) != 0;
+    }
+
+    // The chip holds the line low until it is served, which makes the level a
+    // reliable second source if an edge was missed
+    bool low = digitalRead(_config.irq_pin) == LOW;
+
+    // Test and clear. An edge that comes in after this is kept for the next call.
+    bool pending = _irq_pending;
+    _irq_pending = false;
+    return pending || low;
 }
 
 void PicoENC28J60::acknowledgeInterrupts(uint8_t flags) {
@@ -254,27 +302,22 @@ void PicoENC28J60::acknowledgeInterrupts(uint8_t flags) {
 void PicoENC28J60::setInterruptCallback(void (*callback)(void*), void* user_data) {
     _irq_callback = callback;
     _irq_user_data = user_data;
-
-    // Takes effect at the next begin(); the C driver reads the callback only
-    // while it initializes.
 }
 
 void PicoENC28J60::poll() {
-    if (!_initialized || !_irq_callback) return;
+    if (!_initialized || !_irq_callback || _config.irq_pin >= 0) return;
 
-    // Same contract as the hardware interrupt: the callback reads and
-    // acknowledges the flags.
-    if (getInterruptFlags() != 0) {
+    if (interruptPending()) {
         _irq_callback(_irq_user_data);
-    } else {
-        // getInterruptFlags() masked the interrupt output; unmask it again
-        acknowledgeInterrupts(0);
     }
 }
 
+// Runs in interrupt context: touches no hardware besides this object
 void PicoENC28J60::_staticIRQHandler(void* data) {
     PicoENC28J60* self = static_cast<PicoENC28J60*>(data);
-    if (self && self->_irq_callback) {
+    self->_irq_count = self->_irq_count + 1;
+    self->_irq_pending = true;
+    if (self->_irq_callback) {
         self->_irq_callback(self->_irq_user_data);
     }
 }

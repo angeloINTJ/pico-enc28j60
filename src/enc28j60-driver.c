@@ -339,6 +339,29 @@ void enc28j60_irq_ack_blk(enc28j60 *eth, uint8_t flags)
     reg_bits_set_blk(eth, EIE, INTIE);
 }
 
+uint8_t enc28j60_irq_status_blk(enc28j60 *eth)
+{
+    // A plain read: unlike enc28j60_irq_flags_blk() this leaves the interrupt
+    // output enabled, so it is safe to use for looking without acting
+    return reg_read_e_blk(eth, EIR);
+}
+
+void enc28j60_irq_enable_blk(enc28j60 *eth, uint8_t sources)
+{
+    // Keep the interrupt output quiet while the flags are cleared
+    reg_write_blk(eth, EIE, 0);
+
+    // A link change reaches EIR.LINKIF through the PHY interrupt; reading PHIR
+    // clears whatever it had pending
+    reg_write_p_blk(eth, PHIE, (sources & LINKIE) ? (PGEIE | PLNKIE) : 0);
+    enc28j60_irq_phy_ack_blk(eth);
+    reg_write_blk(eth, EIR, 0);
+
+    if (sources) {
+        reg_write_blk(eth, EIE, INTIE | sources);
+    }
+}
+
 bool enc28j60_irq_is_link(uint8_t flags)
 {
     return flags & LINKIF;

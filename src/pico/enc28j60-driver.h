@@ -72,6 +72,17 @@ void enc28j60_irq_phy_ack_blk(enc28j60 *eth);
 //! Acknowledge and enable the interrupt*
 void enc28j60_irq_ack_blk(enc28j60 *eth, uint8_t flags);
 
+//! Read the interrupt flags without touching the interrupt output; the
+//! counterpart of enc28j60_irq_flags_blk() for code that only wants to look
+uint8_t enc28j60_irq_status_blk(enc28j60 *eth);
+
+//! Program which events drive the INT pin, for code that routes the GPIO
+//! interrupt itself instead of passing irq_cb to enc28j60_init(). `sources` is
+//! a mix of the EIE bits PKTIE (0x40), LINKIE (0x10), TXIE (0x08) and RXERIE
+//! (0x01); pending flags are cleared first, and 0 turns the pin off. The
+//! function sets INTIE itself.
+void enc28j60_irq_enable_blk(enc28j60 *eth, uint8_t sources);
+
 //! Check if the interrupt is the link interrput
 bool enc28j60_irq_is_link(uint8_t flags);
 
