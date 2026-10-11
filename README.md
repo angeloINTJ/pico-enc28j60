@@ -67,146 +67,81 @@ The relevant pins on this board are:
 
 ---
 
-## Arduino IDE Support (New)
--------------------------
+## Arduino IDE Support
+--------------------
 
-This repository includes an **Arduino library wrapper** (src/PicoENC28J60.h/.cpp)
-that provides a C++ class interface while using the original C driver underneath.
-All original functionality is preserved.
+The Arduino library (`PicoENC28J60`) targets the Raspberry Pi Pico (RP2040) with the
+[arduino-pico](https://github.com/earlephilhower/arduino-pico) core. It has two layers:
+
+ * `PicoENC28J60.h` - a raw Ethernet frame driver. You send and receive whole
+   frames. The SPI link is a PIO program, so any free pins will do.
+ * `PicoENC28J60lwIP.h` - the same driver as a network interface of the lwIP
+   stack in the core: DHCP, TCP and UDP sockets, `WiFiClient`, `WiFiServer`,
+   `WebServer` and everything else built on lwIP. Header only.
 
 ### Installation
 
-#### Arduino IDE Library Manager
-Search for "PicoENC28J60" in the Library Manager.
+The library is not in the Arduino Library Manager and there is no GitHub Release
+yet, so install it from this repository:
 
-#### Manual Installation
-1. Download this repository as ZIP from GitHub Releases
-2. In Arduino IDE: Sketch -> Include Library -> Add .ZIP Library
-3. Select the downloaded ZIP file
+ * Arduino IDE: *Code > Download ZIP* on GitHub, then *Sketch > Include Library >
+   Add .ZIP Library*.
+ * From a clone, which makes it easy to stay up to date: clone the repository
+   into your Arduino libraries folder (usually `~/Arduino/libraries`).
+ * PlatformIO with the arduino-pico core:
+   `lib_deps = https://github.com/angeloINTJ/pico-enc28j60`
 
-#### PlatformIO
-lib_deps = 
-    https://github.com/angeloINTJ/pico-enc28j60
+### Quick start: a web page that toggles the LED
 
-#### Arduino CLI
-arduino-cli lib install PicoENC28J60
+`examples/WebServerLedToggle` gets an address from DHCP and serves a page with a
+*Toggle LED* button. The network part is just:
 
-### Quick Start (Arduino)
+```cpp
+#include <PicoENC28J60lwIP.h>
+
+PicoENC28J60lwIP eth;  // default pins: SCK=GP2 MOSI=GP3 MISO=GP4 CS=GP5 RST=GP7
+
+void setup() {
+    eth.begin();                        // DHCP
+    while (!eth.connected()) delay(100);
+    // from here on use WiFiClient, WiFiServer, WebServer... as on any interface
+}
+```
+
+### Quick start: raw frames
 
 ```cpp
 #include <PicoENC28J60.h>
 
-// Optional: custom pin configuration
-ENC28J60Config config;
-config.mosi_pin = 3;   // GP3
-config.miso_pin = 4;   // GP4
-config.sclk_pin = 2;   // GP2
-config.cs_pin = 5;     // GP5 (separate CS pin support)
-config.rst_pin = 7;    // GP7
-config.irq_pin = -1;   // -1 = polling mode
-
-PicoENC28J60 eth(config);
+PicoENC28J60 eth;  // default pins
 
 void setup() {
     Serial.begin(115200);
-    while (!Serial) delay(10);
-    
-    Serial.println("ENC28J60 Test");
-    
     if (!eth.begin()) {
-        Serial.println("Failed to initialize ENC28J60!");
-        while (1) delay(1000);
+        Serial.println("No ENC28J60 found: check the wiring and the 3.3 V supply");
+        while (true) delay(1000);
     }
-    
-    Serial.print("Revision: 0x");
-    Serial.println(eth.getRevision(), HEX);
-    
-    uint8_t mac[6];
-    eth.getMACAddress(mac);
-    Serial.print("MAC: ");
-    for (int i = 0; i < 6; i++) {
-        if (mac[i] < 0x10) Serial.print("0");
-        Serial.print(mac[i], HEX);
-        if (i < 5) Serial.print(":");
-    }
-    Serial.println();
-    
-    Serial.print("Link: ");
-    Serial.println(eth.linkStatus() ? "UP" : "DOWN");
+    Serial.printf("revision 0x%02X, link %s\n", eth.getRevision(), eth.linkStatus() ? "up" : "down");
 }
 
 void loop() {
-    // Poll for interrupts (required in polling mode)
-    eth.poll();
-    
-    // Check for received packets
-    if (eth.hasPacket()) {
-        uint8_t buffer[1520];
-        uint16_t len = eth.receiveFrame(buffer, sizeof(buffer));
-        if (len > 0) {
-            Serial.printf("Received %d bytes\n", len);
-            // Process frame...
-        }
-    }
-    
-    // Send a test frame periodically
-    static uint32_t last_send = 0;
-    if (millis() - last_send > 5000) {
-        last_send = millis();
-        
-        // Simple ARP request frame
-        uint8_t frame[60] = {0};
-        memset(frame, 0xFF, 6);  // Broadcast destination
-        eth.getMACAddress(frame + 6);  // Source MAC
-        frame[12] = 0x08; frame[13] = 0x06;  // ARP
-        
-        if (eth.sendFrame(frame, 60)) {
-            Serial.println("Frame sent");
-        }
-    }
-    
-    delay(10);
-}
-```
-
-### Advanced Arduino Usage
-
-#### Interrupt Mode
-```cpp
-volatile bool packetReceived = false;
-
-void irqHandler(void* userData) {
-    PicoENC28J60* eth = static_cast<PicoENC28J60*>(userData);
-    uint8_t flags = eth->getInterruptFlags();
-    if (flags & PicoENC28J60::INT_PACKET_RX) packetReceived = true;
-    eth->acknowledgeInterrupts(flags);
-}
-
-void setup() {
-    // ... initialization ...
-    
-    ENC28J60Config config;
-    config.irq_pin = 6;  // Connect ENC28J60 INT to GP6
-    PicoENC28J60 eth(config);
-    eth.setInterruptCallback(irqHandler, &eth);
-    eth.begin();
-}
-
-void loop() {
-    if (packetReceived) {
-        packetReceived = false;
-        // Process packets...
+    uint8_t frame[PicoENC28J60::MAX_FRAME_SIZE];
+    while (eth.available()) {
+        uint16_t len = eth.receiveFrame(frame, sizeof(frame));  // length without the FCS
+        if (len) Serial.printf("received %u bytes\n", len);
     }
 }
 ```
 
-#### Custom MAC Address
-```cpp
-ENC28J60Config config;
-uint8_t my_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
-memcpy(config.mac_addr, my_mac, 6);
-PicoENC28J60 eth(config);
-```
+Other pins or MAC address: fill in an `ENC28J60Config` and pass it to
+`eth.begin(config)`. Interrupt mode (INT wired to a GPIO) is shown in
+`examples/AdvancedTest`; it has not been exercised on the bench.
+
+### Hardware test
+
+`extras/bench` has a test that runs against a real board and your LAN: ping,
+receive and echo streams, transmit streams, a long soak and a receiver overload.
+See `extras/bench/README.md`.
 
 ---
 
@@ -236,7 +171,8 @@ struct has the following fields:
  * sm - index to the state machine to run the PIO program
  * miso_pin - defaults to 16
  * mosi_pin - defaults to 17
- * sclk_pin - defaults to 18, and sclk_pin + 1 = 19 is used for Slave Select
+ * sclk_pin - defaults to 18
+ * cs_pin - slave select, defaults to 19
  * irq_pin - defaults to 20
  * dma_irq - interrupt channel to handle DMA IRQs, defaults to 0
  * rx_size - the device has 8kB big buffer that is used for RX and TX queues
@@ -338,50 +274,32 @@ void setup_network()
 ## Arduino API Reference
 -------------------
 
-### PicoENC28J60(ENC28J60Config config = ENC28J60Config())
-Constructor with optional configuration.
+### PicoENC28J60
 
-### bool begin()
-Initialize the ENC28J60. Returns true on success.
+ * `PicoENC28J60(const ENC28J60Config& config = ENC28J60Config())` - pins, MAC
+   address and buffer split live in `ENC28J60Config`.
+ * `bool begin()`, `bool begin(const ENC28J60Config&)` - initialize. Returns
+   `false` if no ENC28J60 answers, and can be called again.
+ * `bool linkStatus()`, `uint8_t getRevision()`
+ * `void getMACAddress(uint8_t* mac) const`, `void setMACAddress(const uint8_t* mac)`
+ * `bool sendFrame(const uint8_t* frame, uint16_t len)` - blocking, up to
+   `MAX_FRAME_SIZE` (1514) bytes, without the FCS.
+ * `uint8_t available()` - frames waiting in the receive buffer.
+ * `uint16_t receiveFrame(uint8_t* buffer, uint16_t max_len)` - length without
+   the FCS, 0 if there is none. `void discardFrame()` drops the next frame.
+ * Interrupt flags: `getInterruptFlags()`, `hasPacket()`, `hasTXComplete()`,
+   `hasLinkChange()`, `hasRXError()`, `acknowledgeInterrupts()`,
+   `setInterruptCallback()`, `poll()`.
+ * `const Stats& stats()` - frame counters, for diagnostics.
+ * `void* getDriverHandle()` - the handle of the C driver.
 
-### bool linkStatus()
-Check if Ethernet link is up.
+### PicoENC28J60lwIP
 
-### uint8_t getRevision()
-Get hardware revision ID (0x06 for ENC28J60).
-
-### void getMACAddress(uint8_t* mac)
-Get current MAC address (6 bytes).
-
-### void setMACAddress(const uint8_t* mac)
-Set MAC address (6 bytes, must be locally administered).
-
-### bool sendFrame(const uint8_t* frame, uint16_t len)
-Send an Ethernet frame. Returns true if queued successfully.
-
-### uint8_t available()
-Get number of frames in RX buffer.
-
-### uint16_t receiveFrame(uint8_t* buffer, uint16_t max_len)
-Receive next frame. Returns number of bytes read, 0 if none available.
-
-### void discardFrame()
-Discard the next frame in RX buffer.
-
-### uint8_t getInterruptFlags()
-Get raw interrupt flags.
-
-### bool hasPacket() / hasTXComplete() / hasLinkChange() / hasRXError()
-Convenience methods to check specific interrupts.
-
-### void acknowledgeInterrupts(uint8_t flags)
-Acknowledge and clear interrupt flags.
-
-### void setInterruptCallback(void (*callback)(void*), void* user_data = nullptr)
-Set interrupt callback function. Pass NULL to disable.
-
-### void poll()
-Poll for interrupts. Must be called regularly in polling mode.
+Same API as the other wired Ethernet interfaces of the core (`begin()`,
+`config()`, `connected()`, `localIP()`, `linkStatus()`, ...), plus
+`setPollPeriod(ms)` and `driverStats()`. Do not call the raw driver methods
+while it runs. Tested on a Pico (RP2040) only. Not handled yet: reacting to the
+cable being unplugged and plugged back (no DHCP renewal on a link change).
 
 ---
 
@@ -389,8 +307,12 @@ Poll for interrupts. Must be called regularly in polling mode.
 ---------
 
 See the examples/ folder:
-- BasicTest - Simple initialization and packet loop (polling mode)
-- AdvancedTest - Interrupt mode, custom MAC, frame parsing
+- WebServerLedToggle - a web page with a Toggle LED button (lwIP, DHCP). Checked
+  with a real browser on the bench.
+- BasicTest - raw frames: initialization, link, receive and print, send a test frame
+- AdvancedTest - interrupt mode (needs INT wired), custom MAC, frame parsing
+- DhcpClient - experimental raw-frame DHCP client written before the receive
+  path was fixed and not tested since. Prefer PicoENC28J60lwIP for DHCP.
 
 ---
 

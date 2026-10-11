@@ -6,6 +6,7 @@
 #######################################
 PicoENC28J60	KEYWORD1
 ENC28J60Config	KEYWORD1
+PicoENC28J60lwIP	KEYWORD1
 #######################################
 # Methods and Functions (KEYWORD2)
 #######################################
@@ -28,6 +29,9 @@ setInterruptCallback	KEYWORD2
 poll	KEYWORD2
 isInitialized	KEYWORD2
 getDriverHandle	KEYWORD2
+stats	KEYWORD2
+driverStats	KEYWORD2
+setPollPeriod	KEYWORD2
 #######################################
 # Constants (LITERAL1)
 #######################################
