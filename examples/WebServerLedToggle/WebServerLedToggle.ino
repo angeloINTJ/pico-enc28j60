@@ -7,7 +7,7 @@
  *
  *   GET  /        the page
  *   POST /toggle  toggles the LED, then redirects back to the page
- *   GET  /status  {"led":true,"gpio":1,"uptime_ms":1234,"ip":"192.168.1.50"}
+ *   GET  /status  {"led":true,"gpio":1,"uptime_ms":1234,"free_heap":190000,"ip":"192.168.1.50"}
  *
  * Needs the arduino-pico core (lwIP and WebServer come with it). Wiring and
  * pins: see ENC28J60Config in PicoENC28J60.h (SCK=GP2, MOSI=GP3, MISO=GP4,
@@ -72,6 +72,8 @@ static void handleStatus()
     json += digitalRead(LED_BUILTIN);  // what the pin really does
     json += ",\"uptime_ms\":";
     json += millis();
+    json += ",\"free_heap\":";
+    json += rp2040.getFreeHeap();
     json += ",\"ip\":\"";
     json += eth.localIP().toString();
     json += "\"}";
@@ -89,6 +91,7 @@ void setup()
     setLed(false);
 
     Serial.println("Starting Ethernet...");
+    eth.hostname("pico-led");  // how the board shows up in your router's client list
     if (!eth.begin()) {
         Serial.println("No ENC28J60 found. Check the wiring and the 3.3 V supply.");
         while (true) delay(1000);
@@ -109,6 +112,7 @@ void setup()
     server.on("/", HTTP_GET, handleRoot);
     server.on("/toggle", HTTP_POST, handleToggle);
     server.on("/status", HTTP_GET, handleStatus);
+    server.on("/favicon.ico", HTTP_GET, []() { server.send(204); });  // no icon, and no 404 either
     server.begin();
 }
 

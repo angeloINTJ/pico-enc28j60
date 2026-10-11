@@ -39,6 +39,19 @@ python3 extras/bench/bench.py --ip 192.168.3.77 --flash
 Arduino libraries folder) and uploads it. Select tests with
 `--tests init,ping,rx`. The exit code is 0 only if everything passed.
 
+## Web server test
+
+`examples/WebServerLedToggle` has its own test, which needs only the address the
+board prints on the serial port:
+
+```
+python3 extras/bench/webtest.py --ip 192.168.3.39 --soak 300
+```
+
+It checks sequential and parallel requests, that 100 toggles leave the LED and
+the level read back from the pin consistent, and, with `--soak`, that the free
+heap does not shrink.
+
 ## Notes
 
 * `ping` exercises the board's ARP responder only if the PC has no cached entry
