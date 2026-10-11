@@ -21,7 +21,7 @@ typedef struct {
     uint miso_pin;
     uint mosi_pin;
     uint sclk_pin;
-    uint cs_pin;   //!< Slave select pin (separate from sclk_pin)
+    uint cs_pin; //!< Slave select pin (separate from sclk_pin)
     uint irq_pin;
     uint dma_irq; //!< IRQ channel used to handle DMAs
 

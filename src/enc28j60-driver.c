@@ -52,7 +52,7 @@ enc28j60_config *enc28j60_get_default_config()
     cfg->miso_pin = 16;
     cfg->mosi_pin = 17;
     cfg->sclk_pin = 18;
-    cfg->cs_pin = 19;   // Separate CS pin
+    cfg->cs_pin = 19; // Separate CS pin
     cfg->irq_pin = 20;
 
     // Use half of the buffer as a receive FIFO
@@ -115,14 +115,16 @@ static void initialize_io(enc28j60_config *cfg)
     sm_config_set_clkdiv(&c, div);
 
     // Initialize pins to default state: CS high, SCK low, MOSI low
-    pio_sm_set_pins_with_mask(cfg->pio, cfg->sm, 
-                              (1u << cfg->cs_pin),  // CS high
-                              (1u << cfg->cs_pin) | (1u << cfg->sclk_pin) | (1u << cfg->mosi_pin));
+    pio_sm_set_pins_with_mask(cfg->pio, cfg->sm,
+                              (1u << cfg->cs_pin), // CS high
+                              (1u << cfg->cs_pin) | (1u << cfg->sclk_pin) |
+                                  (1u << cfg->mosi_pin));
     // Set pin directions: CS, SCK, MOSI as output; MISO as input
     pio_sm_set_pindirs_with_mask(
-        cfg->pio, cfg->sm, 
+        cfg->pio, cfg->sm,
         (1u << cfg->cs_pin) | (1u << cfg->sclk_pin) | (1u << cfg->mosi_pin),
-        (1u << cfg->cs_pin) | (1u << cfg->sclk_pin) | (1u << cfg->mosi_pin) | (1u << cfg->miso_pin));
+        (1u << cfg->cs_pin) | (1u << cfg->sclk_pin) | (1u << cfg->mosi_pin) |
+            (1u << cfg->miso_pin));
     pio_gpio_init(cfg->pio, cfg->mosi_pin);
     pio_gpio_init(cfg->pio, cfg->miso_pin);
     pio_gpio_init(cfg->pio, cfg->sclk_pin);

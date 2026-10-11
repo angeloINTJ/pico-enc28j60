@@ -6,15 +6,17 @@
 
 /**
  * @file PicoENC28J60.h
- * @brief Arduino library for the ENC28J60 Ethernet controller on the Raspberry Pi Pico
+ * @brief Arduino library for the ENC28J60 Ethernet controller on the Raspberry
+ * Pi Pico
  *
- * Based on pico-enc28j60 by Lukasz Janyst (https://github.com/ljanyst/pico-enc28j60).
- * The SPI link to the chip is a PIO program, so any free GPIOs can be used.
+ * Based on pico-enc28j60 by Lukasz Janyst
+ * (https://github.com/ljanyst/pico-enc28j60). The SPI link to the chip is a PIO
+ * program, so any free GPIOs can be used.
  *
  * This class is a raw Ethernet frame driver: it sends and receives whole
  * frames and leaves the protocols to you. For TCP/IP (DHCP, sockets, a web
- * server) use PicoENC28J60lwIP.h, which plugs this driver into the lwIP stack of
- * the arduino-pico core.
+ * server) use PicoENC28J60lwIP.h, which plugs this driver into the lwIP stack
+ * of the arduino-pico core.
  */
 
 #include <Arduino.h>
@@ -27,16 +29,17 @@
  */
 struct ENC28J60Config {
     // SPI pins (PIO-based SPI)
-    int8_t mosi_pin = 3;  // GP3 - SI (MOSI)
-    int8_t miso_pin = 4;  // GP4 - SO (MISO)
-    int8_t sclk_pin = 2;  // GP2 - SCK
-    int8_t cs_pin = 5;    // GP5 - CS (separate from SCK)
-    int8_t rst_pin = 7;   // GP7 - RST
-    int8_t irq_pin = -1;  // GPIO wired to the chip's INT pin (-1 = not wired, the sketch polls)
+    int8_t mosi_pin = 3; // GP3 - SI (MOSI)
+    int8_t miso_pin = 4; // GP4 - SO (MISO)
+    int8_t sclk_pin = 2; // GP2 - SCK
+    int8_t cs_pin = 5; // GP5 - CS (separate from SCK)
+    int8_t rst_pin = 7; // GP7 - RST
+    int8_t irq_pin = -1; // GPIO wired to the chip's INT pin (-1 = not wired,
+                         // the sketch polls)
 
     // MAC address: locally administered unicast. Give every device on the
     // network its own.
-    uint8_t mac_addr[6] = {0x02, 0x42, 0xAC, 0x11, 0x00, 0x01};
+    uint8_t mac_addr[6] = { 0x02, 0x42, 0xAC, 0x11, 0x00, 0x01 };
 
     // Bytes of the chip's 8 KB RAM used for reception; the rest is the transmit
     // area. Rounded down to an even number and kept between 0x0600 and 0x1A00
@@ -44,10 +47,12 @@ struct ENC28J60Config {
     uint16_t rx_buffer_size = 0x1000;
 
     // PIO configuration
-    uint8_t pio_instance = 0;  // 0 = pio0, 1 = pio1
-    uint8_t pio_sm = 0;        // State machine index (0-3)
+    uint8_t pio_instance = 0; // 0 = pio0, 1 = pio1
+    uint8_t pio_sm = 0; // State machine index (0-3)
 
-    ENC28J60Config() {}
+    ENC28J60Config()
+    {
+    }
 };
 
 /**
@@ -57,23 +62,27 @@ struct ENC28J60Config {
  * the chip appends it when sending and checks and strips it when receiving.
  */
 class PicoENC28J60 {
-public:
-    //! Largest frame sendFrame() accepts, without the FCS (14 byte header + 1500 bytes)
+  public:
+    //! Largest frame sendFrame() accepts, without the FCS (14 byte header +
+    //! 1500 bytes)
     static constexpr uint16_t MAX_FRAME_SIZE = 1514;
 
     /**
      * @brief Constructor
-     * @param config Configuration (the defaults match the pins in ENC28J60Config)
+     * @param config Configuration (the defaults match the pins in
+     * ENC28J60Config)
      */
-    PicoENC28J60(const ENC28J60Config& config = ENC28J60Config());
+    PicoENC28J60(const ENC28J60Config &config = ENC28J60Config());
 
     ~PicoENC28J60();
 
     /**
-     * @brief Initialize the ENC28J60 with the configuration given to the constructor
-     * @return true on success; false if no ENC28J60 answers (check the wiring and
-     *         the 3.3 V supply). It is safe to call begin() again after a failure.
-     *         The Ethernet link comes up a second or two later, see linkStatus().
+     * @brief Initialize the ENC28J60 with the configuration given to the
+     * constructor
+     * @return true on success; false if no ENC28J60 answers (check the wiring
+     * and the 3.3 V supply). It is safe to call begin() again after a failure.
+     *         The Ethernet link comes up a second or two later, see
+     * linkStatus().
      */
     bool begin();
 
@@ -83,7 +92,7 @@ public:
      * Convenient for global objects: construct with the defaults and configure
      * in setup(). Ignored if the driver is already initialized.
      */
-    bool begin(const ENC28J60Config& config);
+    bool begin(const ENC28J60Config &config);
 
     /**
      * @brief Check if the Ethernet link is up
@@ -91,7 +100,8 @@ public:
     bool linkStatus();
 
     /**
-     * @brief Hardware revision ID of the chip: 0x02 (B1), 0x04 (B4), 0x05 (B5) or 0x06 (B7)
+     * @brief Hardware revision ID of the chip: 0x02 (B1), 0x04 (B4), 0x05 (B5)
+     * or 0x06 (B7)
      * @return The revision, or 0xFF if the driver is not initialized
      */
     uint8_t getRevision();
@@ -100,7 +110,7 @@ public:
      * @brief Get the MAC address
      * @param mac Pointer to a 6-byte array
      */
-    void getMACAddress(uint8_t* mac) const;
+    void getMACAddress(uint8_t *mac) const;
 
     /**
      * @brief Set the MAC address
@@ -109,7 +119,7 @@ public:
      * Call it before traffic starts: frames arriving while the address changes
      * may be filtered wrongly.
      */
-    void setMACAddress(const uint8_t* mac);
+    void setMACAddress(const uint8_t *mac);
 
     /**
      * @brief Send an Ethernet frame (blocking)
@@ -123,7 +133,7 @@ public:
      * @return true if the frame was sent; false if it is invalid, the transmit
      *         buffer is full or the medium stayed busy (about 20 ms)
      */
-    bool sendFrame(const uint8_t* frame, uint16_t len);
+    bool sendFrame(const uint8_t *frame, uint16_t len);
 
     /**
      * @brief Number of frames waiting in the receive buffer
@@ -136,11 +146,12 @@ public:
      * The frame is copied without its FCS. A frame that does not fit in the
      * buffer is dropped.
      *
-     * @param buffer Where to store the frame; MAX_FRAME_SIZE bytes always suffice
+     * @param buffer Where to store the frame; MAX_FRAME_SIZE bytes always
+     * suffice
      * @param max_len Size of the buffer
      * @return Length of the frame in bytes, 0 if there is none
      */
-    uint16_t receiveFrame(uint8_t* buffer, uint16_t max_len);
+    uint16_t receiveFrame(uint8_t *buffer, uint16_t max_len);
 
     /**
      * @brief Drop the next received frame
@@ -155,20 +166,25 @@ public:
      *
      *     if (eth.interruptPending()) {
      *         uint8_t flags = eth.getInterruptFlags();
-     *         while (eth.available()) { len = eth.receiveFrame(buf, sizeof(buf)); ... }
-     *         if (flags & PicoENC28J60::INT_LINK_CHANGE) { ... eth.linkStatus() ... }
+     *         while (eth.available()) {
+     *             len = eth.receiveFrame(buf, sizeof(buf));
+     *             ...
+     *         }
+     *         if (flags & PicoENC28J60::INT_LINK_CHANGE) {
+     *             ...  // eth.linkStatus() says up or down
+     *         }
      *         eth.acknowledgeInterrupts(flags);
      *     }
      *
-     * With the pin wired this costs no SPI traffic: it looks at the INT line, so
-     * a loop that finds nothing to do leaves the chip alone. It stays true while
-     * the line is low, so an event cannot be missed even if its edge was.
-     * Without irq_pin it looks at the chip's flags instead (one SPI read), so the
-     * same loop works on a board that has no INT wire.
+     * With the pin wired this costs no SPI traffic: it looks at the INT line,
+     * so a loop that finds nothing to do leaves the chip alone. It stays true
+     * while the line is low, so an event cannot be missed even if its edge was.
+     * Without irq_pin it looks at the chip's flags instead (one SPI read), so
+     * the same loop works on a board that has no INT wire.
      *
-     * The chip raises the line for a received frame, a link change and a receive
-     * overflow. It does not for a finished transmission, because sendFrame()
-     * waits for that itself.
+     * The chip raises the line for a received frame, a link change and a
+     * receive overflow. It does not for a finished transmission, because
+     * sendFrame() waits for that itself.
      */
     bool interruptPending();
 
@@ -182,16 +198,20 @@ public:
      */
     uint8_t getInterruptFlags();
 
-    //! Read the interrupt flags without masking the INT pin, for code that only looks
+    //! Read the interrupt flags without masking the INT pin, for code that only
+    //! looks
     uint8_t peekInterruptFlags();
 
-    //! A frame is waiting in the receive buffer (only looks: the INT pin is not masked)
+    //! A frame is waiting in the receive buffer (only looks: the INT pin is not
+    //! masked)
     bool hasPacket();
 
-    //! A transmission completed (only looks; sendFrame() clears the flag when it starts)
+    //! A transmission completed (only looks; sendFrame() clears the flag when
+    //! it starts)
     bool hasTXComplete();
 
-    //! The link went up or down since the last acknowledgeInterrupts(INT_LINK_CHANGE) (only looks)
+    //! The link went up or down since the last
+    //! acknowledgeInterrupts(INT_LINK_CHANGE) (only looks)
     bool hasLinkChange();
 
     //! The receive buffer overflowed or a frame was dropped (only looks)
@@ -199,8 +219,8 @@ public:
 
     /**
      * @brief Clear interrupt flags and unmask the INT pin
-     * @param flags INT_* flags to clear, normally what getInterruptFlags() returned.
-     *        A flag that is left set raises the line again at once.
+     * @param flags INT_* flags to clear, normally what getInterruptFlags()
+     * returned. A flag that is left set raises the line again at once.
      */
     void acknowledgeInterrupts(uint8_t flags);
 
@@ -219,32 +239,44 @@ public:
      * @param callback Function to call (nullptr to disable)
      * @param user_data Passed to the callback
      */
-    void setInterruptCallback(void (*callback)(void*), void* user_data = nullptr);
+    void setInterruptCallback(void (*callback)(void *),
+                              void *user_data = nullptr);
 
     /**
      * @brief Run the interrupt callback from loop() when there is no INT wire
      *
-     * Calls the function given to setInterruptCallback() when interruptPending()
-     * says so, which costs one SPI read. It does nothing when irq_pin is set,
-     * because then the pin calls the function itself.
+     * Calls the function given to setInterruptCallback() when
+     * interruptPending() says so, which costs one SPI read. It does nothing
+     * when irq_pin is set, because then the pin calls the function itself.
      */
     void poll();
 
     //! Number of falling edges seen on the INT pin (0 without irq_pin)
-    uint32_t interruptCount() const { return _irq_count; }
+    uint32_t interruptCount() const
+    {
+        return _irq_count;
+    }
 
     //! The driver has been initialized successfully
-    bool isInitialized() const { return _initialized; }
+    bool isInitialized() const
+    {
+        return _initialized;
+    }
 
     //! Counters for diagnostics; they only ever grow
     struct Stats {
-        uint32_t rx_frames;    //!< frames returned by receiveFrame()
-        uint32_t rx_dropped;   //!< frames dropped because they did not fit the caller's buffer
-        uint32_t rx_resets;    //!< times the receiver was reset because of a bad frame header
-        uint32_t tx_frames;    //!< frames sent
-        uint32_t tx_failures;  //!< sendFrame() calls that failed
+        uint32_t rx_frames; //!< frames returned by receiveFrame()
+        uint32_t rx_dropped; //!< frames dropped because they did not fit the
+                             //!< caller's buffer
+        uint32_t rx_resets; //!< times the receiver was reset because of a bad
+                            //!< frame header
+        uint32_t tx_frames; //!< frames sent
+        uint32_t tx_failures; //!< sendFrame() calls that failed
     };
-    const Stats& stats() const { return _stats; }
+    const Stats &stats() const
+    {
+        return _stats;
+    }
 
     /**
      * @brief The handle of the underlying C driver (struct enc28j60 *)
@@ -252,7 +284,10 @@ public:
      * For code that wants to use the C API of pico/enc28j60-driver.h directly.
      * nullptr until begin() succeeds.
      */
-    void* getDriverHandle() const { return _eth; }
+    void *getDriverHandle() const
+    {
+        return _eth;
+    }
 
     // Interrupt flag constants (EIR bits)
     static constexpr uint8_t INT_LINK_CHANGE = 0x10;
@@ -261,24 +296,24 @@ public:
     static constexpr uint8_t INT_RX_ERROR = 0x01;
     static constexpr uint8_t INT_GLOBAL = 0x80;
 
-private:
+  private:
     ENC28J60Config _config;
-    void* _eth;  // internal driver handle
+    void *_eth; // internal driver handle
     bool _initialized;
     bool _irq_attached = false;
     volatile bool _irq_pending = false;
     volatile uint32_t _irq_count = 0;
-    void (*_irq_callback)(void*);
-    void* _irq_user_data;
+    void (*_irq_callback)(void *);
+    void *_irq_user_data;
     Stats _stats = {};
 
     void _hardwareReset();
-    bool _readRxInfo(uint32_t* rx_info);
-    static void _staticIRQHandler(void* data);
+    bool _readRxInfo(uint32_t *rx_info);
+    static void _staticIRQHandler(void *data);
 
     // Not copyable
-    PicoENC28J60(const PicoENC28J60&) = delete;
-    PicoENC28J60& operator=(const PicoENC28J60&) = delete;
+    PicoENC28J60(const PicoENC28J60 &) = delete;
+    PicoENC28J60 &operator=(const PicoENC28J60 &) = delete;
 };
 
-#endif  // PICO_ENC28J60_H
+#endif // PICO_ENC28J60_H
