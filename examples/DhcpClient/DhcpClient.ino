@@ -129,6 +129,9 @@ void debugPacket(uint8_t* buf, uint16_t len) {
                             else if (o == 51) Serial.printf("    DHCP Opt 51 (lease): %u\n", (opt[0]<<24)|(opt[1]<<16)|(opt[2]<<8)|opt[3]);
                             else if (o == 1) Serial.printf("    DHCP Opt 1 (mask): %d.%d.%d.%d\n", opt[0],opt[1],opt[2],opt[3]);
                             else if (o == 3) Serial.printf("    DHCP Opt 3 (router): %d.%d.%d.%d\n", opt[0],opt[1],opt[2],opt[3]);
+                            else if (o == 58) Serial.printf("    DHCP Opt 58 (T1): %u\n", (opt[0]<<24)|(opt[1]<<16)|(opt[2]<<8)|opt[3]);
+                            else if (o == 59) Serial.printf("    DHCP Opt 59 (T2): %u\n", (opt[0]<<24)|(opt[1]<<16)|(opt[2]<<8)|opt[3]);
+                            else if (o == 6) Serial.printf("    DHCP Opt 6 (DNS): %d.%d.%d.%d\n", opt[0],opt[1],opt[2],opt[3]);
                             else Serial.printf("    DHCP Opt %d (len=%d)\n", o, ol);
                             opt += ol;
                         }
@@ -268,7 +271,9 @@ void handleDhcpResponse(uint8_t* buf, uint8_t* srcIp, uint8_t* dhcp, uint16_t le
                   msgType, g_xid-1, yiaddr>>24, (yiaddr>>16)&0xFF, (yiaddr>>8)&0xFF, yiaddr&0xFF);
     
     if (g_dhcpState == ST_OFFER && msgType == 2) { // OFFER
-        g_offeredIp = yiaddr; g_leaseTime = 3600;
+        g_offeredIp = yiaddr; 
+        g_serverIp = servIp ? servIp : *(uint32_t*)srcIp;
+        g_leaseTime = lease ? lease : 3600;
         Serial.printf("[DHCP] OFFER: %d.%d.%d.%d\n", yiaddr>>24, (yiaddr>>16)&0xFF, (yiaddr>>8)&0xFF, yiaddr&0xFF);
         g_dhcpState = ST_REQUEST; g_dhcpRetries = 0; sendDhcpRequest();
     }
@@ -276,6 +281,10 @@ void handleDhcpResponse(uint8_t* buf, uint8_t* srcIp, uint8_t* dhcp, uint16_t le
         g_offeredIp = yiaddr;
         Serial.println("[DHCP] ACK received!");
         g_dhcpState = ST_BOUND; digitalWrite(LED_PIN, HIGH);
+    }
+    else if (msgType == 6) { // NAK
+        Serial.println("[DHCP] NAK - restarting");
+        g_dhcpState = ST_DISCOVER; g_lastDhcpTime = 0; g_dhcpRetries = 0;
     }
 }
 
@@ -299,7 +308,7 @@ void sendDhcpRequest() {
     udp[0]=68>>8; udp[1]=68; udp[2]=67>>8; udp[3]=67;
     uint16_t ulen = 8+300; udp[4]=ulen>>8; udp[5]=ulen&0xFF; udp[6]=0; udp[7]=0;
     
-    // Build DHCP REQUEST
+    // Build DHCP REQUEST with Server ID from OFFER
     uint8_t* dhcp = udp+8;
     memset(dhcp, 0, 300);
     dhcp[0]=1; dhcp[1]=1; dhcp[2]=6; dhcp[3]=0;
@@ -312,15 +321,19 @@ void sendDhcpRequest() {
     uint8_t* opt = dhcp + 240;
     *opt++=53; *opt++=1; *opt++=3; // REQUEST=3
     *opt++=61; *opt++=7; *opt++=1; memcpy(opt, MY_MAC, 6); opt+=6;
+    // Requested IP (option 50)
     *opt++=50; *opt++=4; *opt++=g_offeredIp>>24; *opt++=(g_offeredIp>>16)&0xFF; *opt++=(g_offeredIp>>8)&0xFF; *opt++=g_offeredIp&0xFF;
-    *opt++=54; *opt++=4; *opt++=0; *opt++=0; *opt++=0; *opt++=0;
+    // Server ID (option 54) - CRITICAL: must match the server that sent OFFER
+    *opt++=54; *opt++=4; *opt++=g_serverIp>>24; *opt++=(g_serverIp>>16)&0xFF; *opt++=(g_serverIp>>8)&0xFF; *opt++=g_serverIp&0xFF;
+    // Parameter request list
     *opt++=55; *opt++=4; *opt++=1; *opt++=3; *opt++=6; *opt++=12;
+    // Hostname
     *opt++=12; *opt++=9; memcpy(opt, "pico-enc", 8); opt[8]=0; opt+=9;
     *opt++=255;
     
     uint16_t flen = 14+20+8+300;
     g_eth.sendFrame(g_txBuffer, flen);
-    Serial.println("[DHCP] REQUEST sent");
+    Serial.println("[DHCP] REQUEST sent with Server ID: " + String(g_serverIp>>24) + "." + String((g_serverIp>>16)&0xFF) + "." + String((g_serverIp>>8)&0xFF) + "." + String(g_serverIp&0xFF));
     g_xid++; g_dhcpState = ST_ACK; g_lastDhcpTime = millis(); g_dhcpRetries++;
 }
 
