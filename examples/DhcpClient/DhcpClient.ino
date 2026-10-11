@@ -67,6 +67,21 @@ void setup() {
     g_dhcpState = ST_DISCOVER;
     g_lastDhcpTime = 0;
     g_dhcpRetries = 0;
+    
+    // Randomize xid using hardware entropy
+    g_xid = (uint32_t)micros() ^ (uint32_t)rand() ^ ((uint32_t)MY_MAC[3] << 16) ^ ((uint32_t)MY_MAC[4] << 8) ^ MY_MAC[5];
+    
+    // Configure half-duplex (ENC28J60 is 10Mbps only, no auto-negotiation)
+    // PHCON1.PDPXMD = 0 (half-duplex), MACON3.FULDPX = 0
+    // This is the default after reset, but ensure it's set
+    writeReg8(0x00, 0x00); // PHCON1 low byte
+    writeReg8(0x01, 0x00); // PHCON1 high byte
+    writeReg8(0x02, 0x00); // MACON3 low byte
+    writeReg8(0x03, 0x00); // MACON3 high byte
+    writeReg8(0x04, 0x12); // MABBIPG (9.6us IPG)
+    writeReg8(0x06, 0x12); // MAIPGL
+    writeReg8(0x07, 0x0C); // MAIPGH
+    
     Serial.println("\n=== Starting DHCP ===");
 }
 
@@ -75,9 +90,11 @@ void loop() {
     
     if (g_eth.hasPacket()) {
         uint16_t len = g_eth.receiveFrame(g_rxBuffer, sizeof(g_rxBuffer));
-        if (len > 0) {
+        if (len > 4) {  // Minimum frame size > CRC
+            len -= 4;   // Subtract 4-byte CRC from received length
             debugPacket(g_rxBuffer, len);
             processPacket(g_rxBuffer, len);
+            advanceRxPointer();  // Free the frame buffer
         }
     }
     
@@ -156,6 +173,10 @@ void processPacket(uint8_t* buf, uint16_t len) {
     
     if (ethType == 0x0806) handleArp(buf, len);
     else if (ethType == 0x0800) handleIpv4(buf, len);
+    
+    // After processing, advance RX read pointer to free buffer space
+    // This prevents re-reading the same frame repeatedly
+    advanceRxPointer();
 }
 
 void handleArp(uint8_t* buf, uint16_t len) {
@@ -212,6 +233,30 @@ void handleUdp(uint8_t* buf, uint8_t* srcIp, uint8_t* dstIp, uint8_t* udp, uint1
 // DHCP Core
 // ============================================================
 
+// Calculate UDP checksum (pseudo-header + UDP header + data)
+// Pseudo-header: src IP (4 bytes), dst IP (4 bytes), zero (1), protocol (1), UDP length (2)
+uint16_t calcUdpChecksum(uint8_t* ip, uint8_t* udp, uint16_t udpLen) {
+    uint32_t sum = 0;
+    // Pseudo-header: src IP (4 bytes = 2 words)
+    sum += (ip[12] << 8) | ip[13];
+    sum += (ip[14] << 8) | ip[15];
+    // dst IP (4 bytes = 2 words)
+    sum += (ip[16] << 8) | ip[17];
+    sum += (ip[18] << 8) | ip[19];
+    // zero + protocol
+    sum += 17;  // protocol (17 = UDP), zero byte is implicit
+    // UDP length
+    sum += udpLen;
+    
+    // UDP header + data
+    for (int i = 0; i < udpLen; i += 2) {
+        uint16_t w = (udp[i] << 8) | (i+1 < udpLen ? udp[i+1] : 0);
+        sum += w;
+    }
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    return ~sum;
+}
+
 void sendDhcpDiscover() {
     Serial.println("[DHCP] >>> DISCOVER xid=0x" + String(g_xid, HEX));
     
@@ -233,12 +278,38 @@ void sendDhcpDiscover() {
     
     // UDP
     udp[0]=68>>8; udp[1]=68; udp[2]=67>>8; udp[3]=67;
-    uint16_t ulen = 8+300; udp[4]=ulen>>8; udp[5]=ulen&0xFF; udp[6]=0; udp[7]=0;
+    uint16_t ulen = 8+300; udp[4]=ulen>>8; udp[5]=ulen&0xFF;
+    // Calculate UDP checksum
+    uint16_t udpCsum = calcUdpChecksum(ip, udp, ulen);
+    udp[6] = udpCsum >> 8; udp[7] = udpCsum & 0xFF;
     
     // DHCP DISCOVER
     buildDhcp(udp+8, 1, 0, 0, g_xid);
     
     uint16_t flen = 14+20+8+300;
+    
+    // Debug: print DISCOVER options
+    Serial.println("[DHCP] DISCOVER options:");
+    uint8_t* dbg = udp + 8 + 240;
+    while (*dbg != 255) {
+        uint8_t o = *dbg++; uint8_t ol = *dbg++;
+        if (o == 53) Serial.printf("  Opt 53 (type): %d\n", *dbg);
+        else if (o == 61) Serial.printf("  Opt 61 (client ID): MAC\n");
+        else if (o == 55) Serial.printf("  Opt 55 (params): %d,%d,%d,%d\n", dbg[0],dbg[1],dbg[2],dbg[3]);
+        else if (o == 12) Serial.printf("  Opt 12 (hostname): %s\n", (char*)dbg);
+        else Serial.printf("  Opt %d (len=%d)\n", o, ol);
+        dbg += ol;
+    }
+    
+    // Debug: print raw DISCOVER packet
+    Serial.print("[DHCP] DISCOVER packet raw: ");
+    for (int i = 0; i < flen; i++) {
+        if (g_txBuffer[i] < 16) Serial.print("0");
+        Serial.print(g_txBuffer[i], HEX); Serial.print(" ");
+        if ((i+1)%16==0) Serial.print(" ");
+    }
+    Serial.println();
+    
     g_eth.sendFrame(g_txBuffer, flen);
     Serial.println("[DHCP] >>> DISCOVER sent xid=0x" + String(g_xid, HEX));
     // DO NOT increment g_xid - keep same xid for entire DHCP exchange
@@ -330,9 +401,37 @@ void sendDhcpRequest() {
     *opt++=54; *opt++=4; *opt++=g_serverIp>>24; *opt++=(g_serverIp>>16)&0xFF; *opt++=(g_serverIp>>8)&0xFF; *opt++=g_serverIp&0xFF;
     // Parameter request list
     *opt++=55; *opt++=4; *opt++=1; *opt++=3; *opt++=6; *opt++=12;
-    // Hostname
-    *opt++=12; *opt++=9; memcpy(opt, "pico-enc", 8); opt[8]=0; opt+=9;
+    // Hostname (length 8, no null terminator in length)
+    *opt++=12; *opt++=8; memcpy(opt, "pico-enc", 8); opt+=8;
     *opt++=255;
+    
+    // Debug: print REQUEST options
+    Serial.println("[DHCP] REQUEST options:");
+    uint8_t* dbg = dhcp + 240;
+    while (*dbg != 255) {
+        uint8_t o = *dbg++; uint8_t ol = *dbg++;
+        if (o == 53) Serial.printf("  Opt 53 (type): %d\n", *dbg);
+        else if (o == 50) Serial.printf("  Opt 50 (req IP): %d.%d.%d.%d\n", dbg[0],dbg[1],dbg[2],dbg[3]);
+        else if (o == 54) Serial.printf("  Opt 54 (server): %d.%d.%d.%d\n", dbg[0],dbg[1],dbg[2],dbg[3]);
+        else if (o == 50) Serial.printf("  Opt 50 (req IP): %d.%d.%d.%d\n", dbg[0],dbg[1],dbg[2],dbg[3]);
+        else if (o == 61) Serial.printf("  Opt 61 (client ID): MAC\n");
+        else Serial.printf("  Opt %d (len=%d)\n", o, ol);
+        dbg += ol;
+    }
+    
+    // Also print raw REQUEST packet for debugging
+    uint16_t reqFlen = 14+20+8+300;
+    Serial.print("[DHCP] REQUEST packet raw: ");
+    for (int i = 0; i < reqFlen; i++) {
+        if (g_txBuffer[i] < 16) Serial.print("0");
+        Serial.print(g_txBuffer[i], HEX); Serial.print(" ");
+        if ((i+1)%16==0) Serial.print(" ");
+    }
+    Serial.println();
+    
+    // Calculate UDP checksum for REQUEST
+    uint16_t udpCsum = calcUdpChecksum(ip, udp, ulen);
+    udp[6] = udpCsum >> 8; udp[7] = udpCsum & 0xFF;
     
     uint16_t flen = 14+20+8+300;
     g_eth.sendFrame(g_txBuffer, flen);
@@ -372,6 +471,13 @@ void sendIpPacket(uint8_t* buf, uint8_t* dstIp, uint8_t proto, uint8_t* pay, uin
     memcpy(ip+12, (uint8_t*)&g_offeredIp, 4); memcpy(ip+16, dstIp, 4);
     ip[10]=0; ip[11]=0; g_checksum = checksum(ip,20); ip[10]=g_checksum>>8; ip[11]=g_checksum&0xFF;
     memcpy(ip+20, pay, len);
+    // Add UDP checksum if UDP
+    if (proto == 17) {
+        uint8_t* udp = ip + 20;
+        uint16_t udpLen = len;
+        uint16_t udpCsum = calcUdpChecksum(ip, udp, udpLen);
+        udp[6] = udpCsum >> 8; udp[7] = udpCsum & 0xFF;
+    }
     g_eth.sendFrame(buf, 14+20+len);
 }
 
@@ -382,6 +488,42 @@ void handleIcmp(uint8_t* buf, uint8_t* srcIp, uint8_t* pay, uint16_t len) {
     pay[2]=c>>8; pay[3]=c&0xFF;
     sendIpPacket(buf+14, srcIp, 1, pay, len);
     Serial.println("[ICMP] Echo reply");
+}
+
+// Write a single register via ENC28J60 SPI
+void writeReg8(uint8_t addr, uint8_t val) {
+    // Use the raw frame buffer to send a WCR command
+    memset(g_txBuffer, 0, 64);
+    uint8_t* cmd = g_txBuffer;
+    // Build WCR command: opcode=0x40 (WCR), address, data
+    // PIO command format: 0x40 | (addr & 0x1F) for WCR
+    cmd[0] = 0x40 | (addr & 0x1F); // WCR opcode
+    cmd[1] = val;
+    g_eth.sendFrame(g_txBuffer, 2); // Send 2 bytes (command + data)
+}
+
+// Advance RX read pointer to free the frame we just processed
+// This prevents re-reading the same frame repeatedly
+void advanceRxPointer() {
+    // The ENC28J60 puts the next packet pointer in the first 2 bytes of the frame
+    // We need to read it and update ERXRDPT and ERDPT
+    uint16_t nextPacket = (g_rxBuffer[1] << 8) | g_rxBuffer[0];
+    
+    // Update ERXRDPT to next packet - 1 (with wrap handling)
+    uint16_t erxrdpt = (nextPacket == 0) ? 0x1FFF : (nextPacket - 1);
+    // Ensure odd address (errata #14)
+    if ((erxrdpt & 1) == 0) erxrdpt--;
+    
+    // Write ERXRDPT (Bank 0, registers 0x0C/0x0D)
+    writeReg8(0x0C, erxrdpt & 0xFF);
+    writeReg8(0x0D, erxrdpt >> 8);
+    
+    // Also update ERDPT to same location for next read
+    writeReg8(0x00, erxrdpt & 0xFF);
+    writeReg8(0x01, erxrdpt >> 8);
+    
+    // Decrement packet counter (PKTDEC in ECON2)
+    writeReg8(0x1E, 0x40); // ECON2.PKTDEC
 }
 
 void handleDhcp() {
