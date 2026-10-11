@@ -36,13 +36,13 @@ function: one for device interrupt and one for DMA completion interrupt.
 ENC28J60 is a 3.3V chip and there's a bunch of breakout boards available for it
 that can be used directly with Pico.
 
-![ENC28J60 Board](https://raw.githubusercontent.com/ljanyst/pico-enc28j60/main/imgs/enc28j60-board.webp)
+![ENC28J60 Board](imgs/enc28j60-board.webp)
 
 There's also an Arduino Nano shield designed for a 5V operation. Coincidentally,
 that's the board that has been used for the development of this driver, but it
 needs to be modified before it can be used with Pico.
 
-![ENC28J60 Arduino Nano Shield](https://raw.githubusercontent.com/ljanyst/pico-enc28j60/main/imgs/enc28j60-nano.webp)
+![ENC28J60 Arduino Nano Shield](imgs/enc28j60-nano.webp)
 
 The AMS1117 voltage regulator (marked blue) used to drop the supply voltage to
 3.3V needs to be removed, as we are going to use the Pico's 3.3V output to
@@ -53,7 +53,7 @@ connectors for Vin and Vout pins of the voltage regulator need to be shorted
 (marked blue on the picture below) and so do the inputs and outputs of the
 AND gates responsible for the MOSI and IRQ signals (marked green).
 
-![Modified ENC28J60 Arduino Nano Shield](https://raw.githubusercontent.com/ljanyst/pico-enc28j60/main/imgs/enc28j60-nano-moded.webp)
+![Modified ENC28J60 Arduino Nano Shield](imgs/enc28j60-nano-moded.webp)
 
 The relevant pins on this board are:
 
