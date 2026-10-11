@@ -134,8 +134,41 @@ void loop() {
 ```
 
 Other pins or MAC address: fill in an `ENC28J60Config` and pass it to
-`eth.begin(config)`. Interrupt mode (INT wired to a GPIO) is shown in
-`examples/AdvancedTest`; it has not been exercised on the bench.
+`eth.begin(config)`.
+
+### Using the INT pin
+
+Wire the chip's INT pin to a free GPIO and give its number as `irq_pin`. The chip
+pulls the line low when a frame arrives, the link changes or its receive buffer
+overflows. `loop()` then asks `interruptPending()`, which only looks at that line
+and costs no SPI traffic, and talks to the chip when the answer is yes:
+
+```cpp
+ENC28J60Config config;
+config.irq_pin = 6;                       // INT on GP6
+PicoENC28J60 eth(config);                 // eth.begin() in setup()
+
+void loop() {
+    if (eth.interruptPending()) {
+        uint8_t flags = eth.getInterruptFlags();      // also masks the INT pin
+        while (eth.available()) { /* eth.receiveFrame(...) */ }
+        if (flags & PicoENC28J60::INT_LINK_CHANGE) { /* eth.linkStatus() */ }
+        eth.acknowledgeInterrupts(flags);             // clears them, unmasks the pin
+    }
+}
+```
+
+The same loop works without the wire (`irq_pin` left at -1): `interruptPending()`
+then reads the chip's flags instead. The library sets the pin up with the
+internal pull-up and attaches the interrupt through the Arduino core, so your own
+`attachInterrupt()` calls keep working.
+
+An interrupt handler registered with `setInterruptCallback()` runs in interrupt
+context and must not call this class: the chip is reached over one PIO state
+machine, and a transfer started from the handler in the middle of one of the main
+program corrupts both. Set a flag there and use `interruptPending()` in `loop()`.
+See `examples/AdvancedTest`. With `PicoENC28J60lwIP` the same `irq_pin` makes the
+network stack serve a frame the moment it arrives, see below.
 
 ### Hardware test
 
@@ -288,9 +321,12 @@ void setup_network()
  * `uint8_t available()` - frames waiting in the receive buffer.
  * `uint16_t receiveFrame(uint8_t* buffer, uint16_t max_len)` - length without
    the FCS, 0 if there is none. `void discardFrame()` drops the next frame.
- * Interrupt flags: `getInterruptFlags()`, `hasPacket()`, `hasTXComplete()`,
-   `hasLinkChange()`, `hasRXError()`, `acknowledgeInterrupts()`,
-   `setInterruptCallback()`, `poll()`.
+ * INT pin (`irq_pin`): `interruptPending()` (the pin, no SPI traffic),
+   `getInterruptFlags()` (reads the flags and masks the pin),
+   `acknowledgeInterrupts(flags)` (clears them and unmasks the pin),
+   `interruptCount()`. Looking without touching the pin: `peekInterruptFlags()`,
+   `hasPacket()`, `hasTXComplete()`, `hasLinkChange()`, `hasRXError()`.
+   `setInterruptCallback()` and `poll()` are for a handler that only sets a flag.
  * `const Stats& stats()` - frame counters, for diagnostics.
  * `void* getDriverHandle()` - the handle of the C driver.
 
@@ -302,6 +338,12 @@ Same API as the other wired Ethernet interfaces of the core (`begin()`,
 while it runs. Tested on a Pico (RP2040) only. Not handled yet: reacting to the
 cable being unplugged and plugged back (no DHCP renewal on a link change).
 
+Give it a config with `irq_pin` set and it is driven by the INT line: the
+interrupt handler only wakes the lwIP context up, which then reads the frames, so
+the chip is never touched from interrupt context. On the bench that took the median
+time of a `GET /` from 16 ms to 11 ms and made an idle network free of SPI
+traffic. The timer of `setPollPeriod()` remains as a safety net (20 ms then).
+
 ---
 
 ## Examples
@@ -311,7 +353,8 @@ See the examples/ folder:
 - WebServerLedToggle - a web page with a Toggle LED button (lwIP, DHCP). Checked
   with a real browser on the bench.
 - BasicTest - raw frames: initialization, link, receive and print, send a test frame
-- AdvancedTest - interrupt mode (needs INT wired), custom MAC, frame parsing
+- AdvancedTest - interrupt mode (needs INT wired to GP6), custom MAC, frame parsing.
+  Checked on the bench.
 
 ---
 

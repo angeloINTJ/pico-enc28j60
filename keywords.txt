@@ -20,6 +20,9 @@ available	KEYWORD2
 receiveFrame	KEYWORD2
 discardFrame	KEYWORD2
 getInterruptFlags	KEYWORD2
+interruptPending	KEYWORD2
+interruptCount	KEYWORD2
+peekInterruptFlags	KEYWORD2
 hasPacket	KEYWORD2
 hasTXComplete	KEYWORD2
 hasLinkChange	KEYWORD2

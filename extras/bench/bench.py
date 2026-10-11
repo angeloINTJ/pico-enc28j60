@@ -6,6 +6,11 @@ ENC28J60 that is cabled to the same LAN as this PC. It generates real traffic
 (ping, UDP broadcast, UDP unicast) and checks what the board saw and sent.
 
     python3 extras/bench/bench.py --ip 192.168.3.77 --flash
+    python3 extras/bench/bench.py --ip 192.168.3.77 --flash --irq 6    # INT wired to GP6
+
+With --irq the board is built to be driven by the chip's INT pin: the main loop
+talks to the chip only when the pin asks for it. All the tests above then run on
+top of that, and three more (irqidle, irqedge, irqlink) check the interrupt itself.
 
 Needs pyserial, arduino-cli (only with --flash) and a free IPv4 address on the
 LAN for the board. No root required.
@@ -33,6 +38,7 @@ PORT_RX, PORT_ECHO, PORT_TX, PEER_PORT = 9999, 9997, 9998, 9998
 SIZES = [10, 18, 100, 400, 800, 1200, 1472]  # UDP payload sizes
 ALL_TESTS = ["init", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong", "txbburst",
              "soak", "rxflood"]
+IRQ_TESTS = ["irqidle", "irqedge", "irqlink"]  # only with --irq
 results = []
 
 
@@ -130,10 +136,12 @@ def find_port(explicit):
     return cands[0]
 
 
-def flash(port, fqbn):
-    build = os.path.join(tempfile.gettempdir(), "picoenc-bench-build")
-    subprocess.run(["arduino-cli", "compile", "--fqbn", fqbn, "--library", REPO,
-                    "--build-path", build, SKETCH], check=True)
+def flash(port, fqbn, irq_pin=None):
+    build = os.path.join(tempfile.gettempdir(), "picoenc-bench-build-%s" % ("irq%d" % irq_pin if irq_pin is not None else "poll"))
+    cmd = ["arduino-cli", "compile", "--fqbn", fqbn, "--library", REPO, "--build-path", build]
+    if irq_pin is not None:
+        cmd += ["--build-property", "compiler.cpp.extra_flags=-DBENCH_IRQ_PIN=%d" % irq_pin]
+    subprocess.run(cmd + [SKETCH], check=True)
     # The core's reset-and-deploy helper only works with the real device node,
     # not with the /dev/serial/by-id symlink.
     subprocess.run(["arduino-cli", "upload", "-p", os.path.realpath(port), "--fqbn", fqbn,
@@ -168,7 +176,7 @@ def t_init(p, link_timeout=20):
     d = kv(p.cmd("INFO", "INFO"))
     rev = num(d, "rev")
     record("init", num(d, "init") == 1 and rev in (2, 4, 5, 6),
-           "initialised=%s revision=0x%02X mac=%s" % (d["init"], rev, d["mac"]))
+           "initialised=%s revision=0x%02X mac=%s irq pin=%s" % (d["init"], rev, d["mac"], d.get("irqpin", "?")))
     record("errpath", num(d, "probe_ok") == 0 and num(d, "probe_ms") < 500 and num(d, "init") == 1,
            "begin() with the CS pin on an unconnected GPIO %s after %s ms; the real begin() right after worked"
            % ("failed" if num(d, "probe_ok") == 0 else "SUCCEEDED (wrong)", d["probe_ms"]))
@@ -375,18 +383,94 @@ def t_tx(p, host_ip, pico_ip, name, count, plen, gap_us):
            "duplicates=%d corrupted=%d" % (sent, fail, plen, gap_us, got, count, dup, corrupt))
 
 
+def int_level(p, samples=5):
+    """The level of the INT pin as the board sees it, sampled a few times over 0.2 s; 1 = idle."""
+    levels = []
+    for _ in range(samples):
+        levels.append(num(stats(p), "int"))
+        time.sleep(0.04)
+    return min(levels), max(levels)
+
+
+def t_irqidle(p, seconds=8):
+    """With nothing sent to the board the interrupt must stay calm: every edge belongs to a frame or an
+    event, and the line is high at the end."""
+    p.cmd("RESET", "OK")
+    s0 = stats(p)
+    time.sleep(seconds)
+    s1 = stats(p)
+    irq = num(s1, "irq")  # counted since the RESET, like everything else in STAT
+    frames, svc, events = num(s1, "frames"), num(s1, "svc"), num(s1, "lnk") + num(s1, "rxe")
+    lo, hi = int_level(p)
+    ok = irq <= frames + events + 2 and svc <= irq + 2 and lo == 1 and num(s1, "rxrst") == num(s0, "rxrst")
+    record("irqidle", ok, "%d s quiet: %d edges on INT for %d ambient frames and %d events, %d service passes; "
+           "line idle level %d..%d; receiver resets %d" %
+           (seconds, irq, frames, events, svc, lo, hi, num(s1, "rxrst") - num(s0, "rxrst")))
+
+
+def t_irqedge(p, host_ip, count=100, gap=0.05):
+    """Frames far enough apart that each one has to raise the line by itself."""
+    p.cmd("RESET", "OK")
+    sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sk.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sk.bind((host_ip, 0))
+    t0 = time.time()
+    for seq in range(count):
+        sk.sendto(make_payload(seq, 100), ("255.255.255.255", PORT_RX))
+        time.sleep(gap)
+    sk.close()
+    time.sleep(0.5)
+    s = stats(p)
+    irq = num(s, "irq")
+    lo, _ = int_level(p)
+    ok = (num(s, "bench") == count and num(s, "gap") == 0 and num(s, "bad") == 0 and irq >= count and
+          num(s, "svc") >= count * 0.95 and irq <= num(s, "frames") + num(s, "lnk") + num(s, "rxe") + 2 and lo == 1)
+    record("irqedge", ok, "%d frames %d ms apart in %.1f s: received %s, %d edges, %s service passes, "
+           "%s ambient frames; line idle level %d" %
+           (count, gap * 1000, time.time() - t0, s["bench"], irq, s["svc"], num(s, "frames") - num(s, "bench"), lo))
+
+
+def t_irqlink(p, ping_ip):
+    """Power the PHY down and up: the interrupt has to report the link going away and coming back."""
+    p.cmd("RESET", "OK")
+    p.s.reset_input_buffer()
+    p.rx = b""
+    p.send("LINK")
+    try:
+        p.expect("LINKSTART", 5)
+        end = p.expect("LINK", 30)  # LINKDONE or LINKFAIL
+    except TimeoutError as e:
+        record("irqlink", False, str(e))
+        return
+    d = kv(end)
+    done = end.startswith("LINKDONE")
+    time.sleep(1.0)
+    r = subprocess.run(["ping", "-c", "5", "-i", "0.2", "-W", "1", ping_ip], capture_output=True, text=True)
+    m = re.search(r"(\d+) packets transmitted, (\d+) received", r.stdout)
+    got = int(m.group(2)) if m else 0
+    link = num(kv(p.cmd("INFO", "INFO")), "link")
+    ok = done and num(d, "down_ms") < 1000 and num(d, "lnk") >= 2 and link == 1 and got == 5
+    record("irqlink", ok, "%s: link-down reported %s ms after the PHY was powered down, link-up %s ms after power-up, "
+           "%s link interrupts; link=%d, ping after the cycle %d/5" %
+           ("ok" if done else "no link-up interrupt", d.get("down_ms", "?"), d.get("up_ms", "?"), d.get("lnk", "?"),
+            link, got))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ip", required=True, help="free IPv4 address on the LAN for the board")
     ap.add_argument("--port", help="serial port (default: first /dev/serial/by-id/*Pico*)")
     ap.add_argument("--fqbn", default="rp2040:rp2040:rpipico")
     ap.add_argument("--flash", action="store_true", help="compile and upload BenchTest first")
-    ap.add_argument("--tests", default=",".join(ALL_TESTS), help="comma separated; default: all")
+    ap.add_argument("--irq", type=int, metavar="GPIO", help="the board is the interrupt build, INT wired to this GPIO")
+    ap.add_argument("--tests", help="comma separated; default: all")
     args = ap.parse_args()
+    if args.tests is None:
+        args.tests = ",".join(ALL_TESTS + (IRQ_TESTS if args.irq is not None else []))
 
     port = find_port(args.port)
     if args.flash:
-        flash(port, args.fqbn)
+        flash(port, args.fqbn, args.irq)
     host_ip = local_ip_for(args.ip)
     print("board %s on %s, PC %s, serial %s\n" % (args.ip, "LAN", host_ip, port))
 
@@ -418,6 +502,13 @@ def main():
             t_txb(p, host_ip, "txblong", 400, 300, 3000)
         if "txbburst" in wanted:
             t_txb(p, host_ip, "txbburst", 200, 100, 0)
+        if args.irq is not None:
+            if "irqidle" in wanted:
+                t_irqidle(p)
+            if "irqedge" in wanted:
+                t_irqedge(p, host_ip)
+            if "irqlink" in wanted:
+                t_irqlink(p, args.ip)
     else:
         print("no link: skipping the traffic tests")
 

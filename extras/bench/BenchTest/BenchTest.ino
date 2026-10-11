@@ -8,8 +8,19 @@
  * real networking on top of lwIP.
  *
  * Wiring: ENC28J60Config defaults (SCK=GP2 MOSI=GP3 MISO=GP4 CS=GP5 RST=GP7).
+ *
+ * Interrupt build: compile with -DBENCH_IRQ_PIN=6 (bench.py --irq 6 does that)
+ * with the chip's INT wired to that GPIO. loop() then touches the chip only
+ * when the INT line asks for it, so every test also proves that the interrupt
+ * alone drives reception. The LINK command is available in that build.
  */
 #include <PicoENC28J60.h>
+
+// Register access for the PHY power cycle of the LINK command
+extern "C" {
+#include "pico/enc28j60-driver.h"
+#include "enc28j60-cmd.h"
+}
 
 // ---------------------------------------------------------------------------
 // Test protocol (must match bench.py)
@@ -26,6 +37,9 @@ static ENC28J60Config makeConfig()
 {
     ENC28J60Config c;  // default pins
     memcpy(c.mac_addr, MAC, 6);
+#ifdef BENCH_IRQ_PIN
+    c.irq_pin = BENCH_IRQ_PIN;
+#endif
     return c;
 }
 PicoENC28J60 eth(makeConfig());
@@ -43,8 +57,18 @@ struct Stats {
     uint32_t extra0, extra4, extraX;  // bytes after the IP datagram in a full-size frame
     uint32_t rxz;                     // receiveFrame() returned 0 although available() > 0
     uint32_t tx, txf;
+    uint32_t irqSvc, irqLink, irqRxErr;  // interrupt build: service passes, link and overflow events
+    uint32_t irqFlags;                   // OR of every flag byte read
 } st;
 static uint32_t expectedSeq;
+static uint32_t irqBase;  // interrupt count at the last RESET
+
+// LINK command: power the PHY down and up again and watch the interrupt report it
+static struct {
+    uint8_t phase;  // 0 idle, 1 PHY powered down, 2 powered up again and waiting for the link
+    uint32_t t0, t1, downMs, upMs;
+} lk;
+static const uint16_t PHY_PWRSV = 0x0800;  // PHCON1.PPWRSV
 
 struct Peer {
     bool valid;
@@ -297,30 +321,119 @@ static void handleFrame(uint8_t* f, uint16_t len)
 }
 
 // ---------------------------------------------------------------------------
+// Interrupt build: link cycle and service routine
+// ---------------------------------------------------------------------------
+static void startLinkCycle()
+{
+#ifdef BENCH_IRQ_PIN
+    if (lk.phase) {
+        Serial.println("LINKERR busy");
+        return;
+    }
+    enc28j60* h = static_cast<enc28j60*>(eth.getDriverHandle());
+    // Stop the receiver first, as the datasheet asks before powering down
+    reg_bits_clear_blk(h, ECON1, RXEN);
+    delay(2);
+    reg_write_p_blk(h, PHCON1, reg_read_p_blk(h, PHCON1) | PHY_PWRSV);
+    lk.phase = 1;
+    lk.t0 = millis();
+    lk.downMs = lk.upMs = 0;
+    Serial.println("LINKSTART");
+#else
+    Serial.println("LINKERR needs-irq-build");
+#endif
+}
+
+#ifdef BENCH_IRQ_PIN
+// Called when the link-change flag was read; decides what the change means for the LINK command
+static void onLinkChange()
+{
+    bool up = eth.linkStatus();
+    if (lk.phase == 1 && !up && lk.downMs == 0) {
+        lk.downMs = millis() - lk.t0;
+    } else if (lk.phase == 2 && up) {
+        lk.upMs = millis() - lk.t1;
+        lk.phase = 0;
+        Serial.printf("LINKDONE down_ms=%lu up_ms=%lu lnk=%lu\n", (unsigned long)lk.downMs,
+                      (unsigned long)lk.upMs, (unsigned long)st.irqLink);
+    }
+}
+
+static void linkCycleStep()
+{
+    if (lk.phase == 1 && millis() - lk.t0 >= 1500) {
+        enc28j60* h = static_cast<enc28j60*>(eth.getDriverHandle());
+        reg_write_p_blk(h, PHCON1, reg_read_p_blk(h, PHCON1) & ~PHY_PWRSV);
+        delay(2);  // the PHY needs a moment before it takes more commands
+        reg_bits_set_blk(h, ECON1, RXEN);
+        lk.phase = 2;
+        lk.t1 = millis();
+    } else if (lk.phase == 2 && millis() - lk.t1 >= 15000) {
+        lk.phase = 0;
+        Serial.printf("LINKFAIL down_ms=%lu lnk=%lu\n", (unsigned long)lk.downMs, (unsigned long)st.irqLink);
+    }
+}
+
+static void serviceInterrupt()
+{
+    st.irqSvc++;
+    uint8_t flags = eth.getInterruptFlags();  // masks the INT pin until the acknowledge below
+    st.irqFlags |= flags;
+    if (flags & PicoENC28J60::INT_RX_ERROR) st.irqRxErr++;
+    if (flags & PicoENC28J60::INT_LINK_CHANGE) {
+        st.irqLink++;
+        onLinkChange();
+    }
+    for (int n = 0; n < 64 && eth.available(); n++) {
+        uint16_t len = eth.receiveFrame(rxbuf, sizeof(rxbuf));
+        if (len == 0) {
+            st.rxz++;
+            continue;
+        }
+        handleFrame(rxbuf, len);
+    }
+    eth.acknowledgeInterrupts(flags);
+}
+#endif
+
+// ---------------------------------------------------------------------------
 // Serial commands
 // ---------------------------------------------------------------------------
+static int irqPin()
+{
+#ifdef BENCH_IRQ_PIN
+    return BENCH_IRQ_PIN;
+#else
+    return -1;
+#endif
+}
+
 static void printInfo()
 {
     uint8_t m[6];
     eth.getMACAddress(m);
     Serial.printf("INFO init=%d rev=0x%02X mac=%02x:%02x:%02x:%02x:%02x:%02x link=%d ip=%u.%u.%u.%u pend=%u "
-                  "probe_ok=%d probe_ms=%lu\n",
+                  "probe_ok=%d probe_ms=%lu irqpin=%d\n",
                   eth.isInitialized(), eth.getRevision(), m[0], m[1], m[2], m[3], m[4], m[5],
                   eth.linkStatus(), myIp[0], myIp[1], myIp[2], myIp[3], eth.available(), probeOk,
-                  (unsigned long)probeMs);
+                  (unsigned long)probeMs, irqPin());
 }
 
 static void printStats()
 {
     Serial.printf("STAT frames=%lu bench=%lu dup=%lu stale=%lu gap=%lu bad=%lu arp=%lu icmp=%lu echo=%lu "
-                  "other=%lu runt=%lu x0=%lu x4=%lu xo=%lu rxz=%lu tx=%lu txf=%lu pend=%u rxrst=%lu rxdrop=%lu\n",
+                  "other=%lu runt=%lu x0=%lu x4=%lu xo=%lu rxz=%lu tx=%lu txf=%lu pend=%u rxrst=%lu rxdrop=%lu "
+                  "irq=%lu svc=%lu lnk=%lu rxe=%lu irqfl=0x%02X int=%d\n",
                   (unsigned long)st.frames, (unsigned long)st.bench, (unsigned long)st.dup,
                   (unsigned long)st.stale, (unsigned long)st.gap, (unsigned long)st.bad,
                   (unsigned long)st.arp, (unsigned long)st.icmp, (unsigned long)st.echo,
                   (unsigned long)st.other, (unsigned long)st.runt, (unsigned long)st.extra0,
                   (unsigned long)st.extra4, (unsigned long)st.extraX, (unsigned long)st.rxz,
                   (unsigned long)st.tx, (unsigned long)st.txf, eth.available(),
-                  (unsigned long)eth.stats().rx_resets, (unsigned long)eth.stats().rx_dropped);
+                  (unsigned long)eth.stats().rx_resets, (unsigned long)eth.stats().rx_dropped,
+                  (unsigned long)(eth.interruptCount() - irqBase), (unsigned long)st.irqSvc, (unsigned long)st.irqLink,
+                  (unsigned long)st.irqRxErr, (unsigned)st.irqFlags,
+                  irqPin() >= 0 ? digitalRead(irqPin()) : -1);
 }
 
 // TX  <count> <payload length> <gap in microseconds>: unicast stream to the last echo peer.
@@ -370,11 +483,14 @@ static void handleCommand(char* line)
         printStats();
     } else if (strcmp(line, "RESET") == 0) {
         memset(&st, 0, sizeof(st));
+        irqBase = eth.interruptCount();
         expectedSeq = 0;
         peer.valid = false;
         Serial.println("OK");
     } else if (strcmp(line, "ID") == 0) {
         Serial.println("READY bench=1");
+    } else if (strcmp(line, "LINK") == 0) {
+        startLinkCycle();
     } else if (sscanf(line, "TXB %lu %u %lu", &n, &a, &g) == 3) {
         cmdTx(true, n, (uint16_t)a, g);
     } else if (sscanf(line, "TX %lu %u %lu", &n, &a, &g) == 3) {
@@ -426,6 +542,11 @@ void setup()
 void loop()
 {
     pollSerial();
+#ifdef BENCH_IRQ_PIN
+    // The chip is touched only when its INT pin asks for it
+    if (eth.isInitialized() && eth.interruptPending()) serviceInterrupt();
+    linkCycleStep();
+#else
     for (int n = 0; n < 8 && eth.isInitialized() && eth.available(); n++) {
         uint16_t len = eth.receiveFrame(rxbuf, sizeof(rxbuf));
         if (len == 0) {
@@ -434,4 +555,5 @@ void loop()
         }
         handleFrame(rxbuf, len);
     }
+#endif
 }
