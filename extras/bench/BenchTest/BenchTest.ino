@@ -35,10 +35,19 @@
  * only look, and discardFrame(), on frames that wait in the receive buffer),
  * LINKEVENT (hasLinkChange()), SETMAC (setMACAddress()) and CBMODE (the interrupt
  * callback, and poll() when the INT pin is not wired).
+ *
+ * The asynchronous functions of the C driver (DMA, with notify callbacks), which only the FreeRTOS+TCP driver
+ * uses, are covered by ASYNC 1, which hands the chip to them in place of the class, and ASYNC 0, which gives it
+ * back. In that mode loop() runs the interrupt branch of driver_task() (freertos/enc28j60-freertos-driver.c) on
+ * those functions, and the TX and TXB commands send through them. AOPT sets whether ERXRDPT is read back after
+ * every frame and whether frames are dropped unseen. ASYNCCYCLE starts and stops the driver over and over and
+ * reports what it did not give back (DMA channels, heap).
  */
 #include <PicoENC28J60.h>
 #include <SerialPIO.h>
+#include <hardware/dma.h>
 #include <hardware/pio.h>
+#include <hardware/watchdog.h>
 #include <new>
 
 // The C driver, for the commands that go below the Arduino class
@@ -113,6 +122,14 @@ struct Stats {
     uint32_t discarded;                  // frames dropped unseen with discardFrame()
     uint32_t peekBad;                    // a function that only looks said something the flags then denied
     uint32_t peekPkt, peekLnk, peekRxe;  // times hasPacket(), hasLinkChange() and hasRXError() said yes
+    // Asynchronous mode (ASYNC 1)
+    uint32_t rdptEven, rdptChecked;  // ERXRDPT read back after a frame, and how often it was even (errata, issue 14)
+    uint32_t rdptLast, nextLast;     // the last ERXRDPT read back, and the next-packet pointer of that frame
+    uint32_t hdrBad;                 // frame headers that made no sense
+    uint32_t waitTimeouts;           // wait() gave up: the DMA interrupt did not come
+    uint32_t txUploadFail;           // enc28j60_frame_upload() found no room
+    uint32_t txTimeouts;             // TX and TXB gave up on a frame: the upload slot did not become free
+    uint32_t txConfirmed;            // frames the transmit interrupt reported as sent
 } st;
 static volatile uint32_t cbCount;  // calls of the interrupt callback
 static volatile bool cbFlag;       // set by it, taken by the main loop in CBMODE
@@ -120,6 +137,21 @@ static bool cbMode;                // CBMODE 1: serve the chip when the callback
 static bool hold;                  // HOLD 1: leave the frames in the receive buffer
 static uint32_t expectedSeq;
 static uint32_t irqBase;  // interrupt count at the last RESET
+
+// Asynchronous mode (ASYNC 1): the chip belongs to the C driver, which runs its commands through DMA
+static enc28j60* ah;            // its handle; null while the class owns the chip
+static enc28j60_config acfg;    // the driver keeps a pointer to it, so it must outlive the driver
+static volatile bool notified;  // set by the DMA interrupt (notify), taken by wait
+static volatile bool intFlag;   // set by the interrupt on the INT pin (the interrupt build)
+static bool check;              // AOPT: read ERXRDPT back after every frame
+static uint32_t discardEvery;   // AOPT: drop every n-th frame unseen, 0 = none
+static uint32_t rxSeen;         // frames taken since AOPT, to know which is the n-th
+static uint32_t uploadedId = ENC28J60_INVALID_FRAME_ID;    // a frame in the chip, waiting for the transmitter
+static uint32_t txInProgress = ENC28J60_INVALID_FRAME_ID;  // the frame the transmitter has, until its interrupt
+static const uint32_t WAIT_US = 50000;                     // longest wait for a DMA list to finish
+// The size of a frame in the header of the chip includes the FCS; PicoENC28J60.cpp has the same two constants
+static const uint16_t ETH_HEADER_LEN = 14;
+static const uint16_t ETH_FCS_LEN = 4;
 
 static const uint16_t PHY_PWRSV = 0x0800;  // PHCON1.PPWRSV
 
@@ -187,8 +219,11 @@ static uint16_t udpChecksum(const uint8_t* ip, const uint8_t* udp, uint16_t udpL
     return c ? c : 0xFFFF;
 }
 
+static bool asyncSend(const uint8_t* f, uint16_t len);  // asynchronous mode, below
+
 static bool sendTracked(const uint8_t* f, uint16_t len)
 {
+    if (ah) return asyncSend(f, len);  // it counts tx and txf by itself
     bool ok = eth.sendFrame(f, len);
     if (ok) st.tx++;
     else st.txf++;
@@ -473,6 +508,178 @@ static void serviceInterrupt()
 }
 
 // ---------------------------------------------------------------------------
+// Asynchronous mode: the DMA functions of the C driver, used the way the FreeRTOS driver uses them
+// ---------------------------------------------------------------------------
+
+// Interrupt context: the DMA list is done
+static void asyncNotify(void*) { notified = true; }
+
+// The driver calls this right after it starts a DMA list: spin until the interrupt says that the list is done.
+// Giving up after WAIT_US is what makes a list that never finishes (a corrupted command stream, say) show up in
+// waitTimeouts instead of hanging the sketch.
+static void asyncWait(void*)
+{
+    uint32_t t0 = time_us_32();
+    while (!notified) {
+        if (time_us_32() - t0 > WAIT_US) {
+            st.waitTimeouts++;
+            break;
+        }
+    }
+    notified = false;
+}
+
+// The configuration of the C driver for this mode: the pins, the clock and the MAC address of the class, and the
+// callbacks above, which are what turns the asynchronous functions on. No irq_cb: the core of Arduino-Pico owns the
+// one GPIO interrupt callback of the SDK (see PicoENC28J60::begin()), so the INT pin goes through attachInterrupt().
+// Called before every init, because init fills in pio and sm.
+static void asyncConfig()
+{
+    ENC28J60Config c = makeConfig();
+    memset(&acfg, 0, sizeof(acfg));
+    acfg.pio = NULL;
+    acfg.sm = ENC28J60_SM_ANY;
+    acfg.sclk_pin = c.sclk_pin;
+    acfg.mosi_pin = c.mosi_pin;
+    acfg.miso_pin = c.miso_pin;
+    acfg.cs_pin = c.cs_pin;
+    acfg.spi_hz = c.spi_hz;
+    acfg.dma_irq = 0;
+    acfg.rx_size = c.rx_buffer_size;
+    memcpy(acfg.mac_addr, c.mac_addr, 6);
+    acfg.irq_cb = NULL;
+    acfg.notify.notify = asyncNotify;
+    acfg.notify.wait = asyncWait;
+    acfg.notify.data = NULL;
+}
+
+// Like the FreeRTOS driver: one frame uploaded and waiting, one in progress. When the transmitter is free the one
+// that waits goes to it.
+static void asyncKick()
+{
+    if (uploadedId != ENC28J60_INVALID_FRAME_ID && txInProgress == ENC28J60_INVALID_FRAME_ID) {
+        enc28j60_frame_tx(ah, uploadedId);
+        txInProgress = uploadedId;
+        uploadedId = ENC28J60_INVALID_FRAME_ID;
+    }
+}
+
+// Never waits, because the service pass calls it (handleFrame -> sendTracked): a frame that finds the slot taken
+// is counted in txf and dropped.
+static bool asyncSend(const uint8_t* f, uint16_t len)
+{
+    if (uploadedId != ENC28J60_INVALID_FRAME_ID) {
+        st.txf++;
+        return false;
+    }
+    uint32_t id = enc28j60_frame_upload(ah, len, f);
+    if (id == ENC28J60_INVALID_FRAME_ID) {
+        st.txUploadFail++;
+        st.txf++;
+        return false;
+    }
+    uploadedId = id;
+    asyncKick();
+    st.tx++;
+    return true;
+}
+
+// One frame from the chip, taken the way rx_frame() of the FreeRTOS driver takes it, and handed to handleFrame()
+// where that one hands it to the network stack. The header is checked the way PicoENC28J60::_readRxInfo() checks it;
+// the FreeRTOS driver takes it as it comes.
+static void asyncRxFrame()
+{
+    uint32_t info = enc28j60_frame_rx_info(ah);
+    uint16_t size = ENC28J60_RX_SIZE(info);
+    uint16_t next = ENC28J60_RX_NEXT(info);
+    bool valid = size >= ETH_HEADER_LEN + ETH_FCS_LEN && size <= PicoENC28J60::MAX_FRAME_SIZE + ETH_FCS_LEN &&
+                 next < acfg.rx_size && (next & 1) == 0;
+    if (!valid) {
+        st.hdrBad++;
+        enc28j60_rx_reset_blk(ah);
+        return;
+    }
+
+    bool taken = true;
+    if (discardEvery && ++rxSeen % discardEvery == 0) {
+        enc28j60_frame_discard(ah, info);
+        st.discarded++;
+        taken = false;
+    } else {
+        enc28j60_frame_rx(ah, info, rxbuf);
+    }
+
+    if (check) {
+        // The blocking reads below must not cut into a DMA list that is still going out, and a call can come back
+        // before the last commands of its list have been sent. So wait until the list is certainly over: 64 bytes of
+        // SPI is more than the commands that follow the data in any list. Without check there is no wait and no SPI
+        // between one call and the next, which is how the FreeRTOS driver goes on (and what asyncfast tests).
+        delayMicroseconds(64u * 8u * 1000000u / acfg.spi_hz + 50u);
+        bank_set_blk(ah, 0);
+        uint16_t rdpt = reg_read_e_blk(ah, ERXRDPTL);
+        rdpt |= (uint16_t)(reg_read_e_blk(ah, ERXRDPTH) << 8);
+        st.rdptChecked++;
+        if (!(rdpt & 1)) st.rdptEven++;  // errata, issue 14: the chip needs ERXRDPT odd
+        st.rdptLast = rdpt;
+        st.nextLast = next;
+    }
+    // The size in the header includes the FCS, which receiveFrame() leaves out: pass on what it would return, so that
+    // x0 and x4 mean the same here
+    if (taken) handleFrame(rxbuf, size - ETH_FCS_LEN);
+}
+
+// The interrupt branch of driver_task() in freertos/enc28j60-freertos-driver.c: it mirrors that function, call for
+// call and in the same order (one frame for PKTIF, every frame that waits for RXERIF), with handleFrame() where the
+// network stack is. Its transmit half is asyncSend() and asyncKick(). The link change is only counted, and a
+// transmit flag is taken only when a frame is in progress (the FreeRTOS driver confirms the id it has).
+static void asyncService()
+{
+    uint8_t flags = enc28j60_irq_flags(ah);
+    st.irqSvc++;
+    st.irqFlags |= flags;
+    if (enc28j60_irq_is_link(flags)) st.irqLink++;
+    if (enc28j60_irq_is_tx(flags) && txInProgress != ENC28J60_INVALID_FRAME_ID) {
+        enc28j60_frame_tx_confirm(ah, txInProgress);
+        txInProgress = ENC28J60_INVALID_FRAME_ID;
+        st.txConfirmed++;
+    }
+    if (enc28j60_irq_is_rx(flags)) asyncRxFrame();
+    if (enc28j60_irq_is_rx_err(flags)) {
+        st.irqRxErr++;
+        uint8_t n = enc28j60_rx_count(ah);
+        for (uint8_t i = 0; i < n; i++) asyncRxFrame();
+    }
+    enc28j60_irq_ack(ah, flags);
+    asyncKick();
+}
+
+// A service pass when one is due: at every turn without the INT pin, when the pin asked with it
+static void asyncPoll()
+{
+#ifdef BENCH_IRQ_PIN
+    if (!intFlag) return;
+    intFlag = false;  // before the pass, so that an edge during it asks for another
+#endif
+    asyncService();
+}
+
+// What the streams of TX and TXB use in this mode. The upload slot is freed by the service pass (the transmit
+// interrupt is what moves the frame in it to the transmitter), so serve the chip while waiting for it. A full-size
+// frame takes 1.2 ms on the wire: 20 ms leaves room for deferral and retries, and then the frame is given up.
+static bool asyncSendWait(const uint8_t* f, uint16_t len)
+{
+    for (uint32_t t0 = millis(); uploadedId != ENC28J60_INVALID_FRAME_ID;) {
+        if (millis() - t0 >= 20) {
+            st.txTimeouts++;
+            st.txf++;
+            return false;
+        }
+        asyncPoll();
+    }
+    return asyncSend(f, len);
+}
+
+// ---------------------------------------------------------------------------
 // Serial commands
 // ---------------------------------------------------------------------------
 static int irqPin()
@@ -493,12 +700,15 @@ static void printInfo()
     enc28j60* h = driverHandle();
     int pio = h ? (int)pio_get_index(h->cfg->pio) : -1;
     int sm = h ? (int)h->cfg->sm : -1;
+    // The class is stopped in the asynchronous mode and cannot tell: ask the chip through the C driver. Nothing is in
+    // flight between two commands, so the blocking call is safe.
+    bool link = ah ? enc28j60_link_status_blk(ah) : eth.linkStatus();
     Serial.printf("INFO init=%d rev=0x%02X mac=%02x:%02x:%02x:%02x:%02x:%02x link=%d ip=%u.%u.%u.%u pend=%u "
                   "probe_ok=%d probe_ms=%lu probe_err=%s irqpin=%d pio=%d sm=%d claimed=%d "
                   "cfg_rejected=%d cfg_tried=%d cfg_us=%lu pioful_filled=%d pioful_ok=%d pioful_ms=%lu pioful_err=%s err=%s "
                   "spihz=%lu\n",
                   eth.isInitialized(), eth.getRevision(), m[0], m[1], m[2], m[3], m[4], m[5],
-                  eth.linkStatus(), myIp[0], myIp[1], myIp[2], myIp[3], eth.available(), probeOk,
+                  link, myIp[0], myIp[1], myIp[2], myIp[3], eth.available(), probeOk,
                   (unsigned long)probeMs, errName(probeErr), irqPin(), pio, sm,
                   h ? pio_sm_is_claimed(h->cfg->pio, h->cfg->sm) : 0, cfgRejected, cfgTried,
                   (unsigned long)cfgMaxUs, pioFilled, pioFullOk, (unsigned long)pioFullMs, errName(pioFullErr),
@@ -511,24 +721,30 @@ static void printStats()
     Serial.printf("STAT frames=%lu bench=%lu dup=%lu stale=%lu gap=%lu bad=%lu arp=%lu icmp=%lu echo=%lu "
                   "other=%lu runt=%lu x0=%lu x4=%lu xo=%lu rxz=%lu tx=%lu txf=%lu pend=%u rxrst=%lu rxdrop=%lu "
                   "irq=%lu svc=%lu lnk=%lu rxe=%lu irqfl=0x%02X int=%d io=%lu rec=%lu txab=%lu txre=%lu "
-                  "dis=%lu peekbad=%lu peekpkt=%lu peeklnk=%lu peekrxe=%lu cb=%lu\n",
+                  "dis=%lu peekbad=%lu peekpkt=%lu peeklnk=%lu peekrxe=%lu cb=%lu "
+                  "async=%d rdpteven=%lu rdptchk=%lu rdptlast=0x%04x nextlast=0x%04x hdrbad=%lu waitto=%lu "
+                  "txupf=%lu txto=%lu txconf=%lu\n",
                   (unsigned long)st.frames, (unsigned long)st.bench, (unsigned long)st.dup,
                   (unsigned long)st.stale, (unsigned long)st.gap, (unsigned long)st.bad,
                   (unsigned long)st.arp, (unsigned long)st.icmp, (unsigned long)st.echo,
                   (unsigned long)st.other, (unsigned long)st.runt, (unsigned long)st.extra0,
                   (unsigned long)st.extra4, (unsigned long)st.extraX, (unsigned long)st.rxz,
-                  (unsigned long)st.tx, (unsigned long)st.txf, eth.available(),
+                  (unsigned long)st.tx, (unsigned long)st.txf, ah ? enc28j60_rx_count_blk(ah) : eth.available(),
                   (unsigned long)e.rx_resets, (unsigned long)e.rx_dropped,
                   (unsigned long)(eth.interruptCount() - irqBase), (unsigned long)st.irqSvc, (unsigned long)st.irqLink,
                   (unsigned long)st.irqRxErr, (unsigned)st.irqFlags,
                   irqPin() >= 0 ? digitalRead(irqPin()) : -1, (unsigned long)e.io_errors,
                   (unsigned long)e.recoveries, (unsigned long)e.tx_aborts, (unsigned long)e.tx_retries,
                   (unsigned long)st.discarded, (unsigned long)st.peekBad, (unsigned long)st.peekPkt,
-                  (unsigned long)st.peekLnk, (unsigned long)st.peekRxe, (unsigned long)cbCount);
+                  (unsigned long)st.peekLnk, (unsigned long)st.peekRxe, (unsigned long)cbCount, ah != nullptr,
+                  (unsigned long)st.rdptEven, (unsigned long)st.rdptChecked, (unsigned)st.rdptLast,
+                  (unsigned)st.nextLast, (unsigned long)st.hdrBad, (unsigned long)st.waitTimeouts,
+                  (unsigned long)st.txUploadFail, (unsigned long)st.txTimeouts, (unsigned long)st.txConfirmed);
 }
 
 // TX  <count> <payload length> <gap in microseconds>: unicast stream to the last echo peer.
 // TXB <count> <payload length> <gap in microseconds>: broadcast stream to 255.255.255.255:PORT_TX.
+// In the asynchronous mode both send through the C driver, waiting for the upload slot (asyncSendWait()).
 static void cmdTx(bool broadcast, uint32_t count, uint16_t plen, uint32_t gapUs)
 {
     static const uint8_t bcMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -549,12 +765,14 @@ static void cmdTx(bool broadcast, uint32_t count, uint16_t plen, uint32_t gapUs)
         uint16_t flen = broadcast
             ? finishUdp(txbuf, bcMac, bcIp, PORT_ECHO, PORT_TX, plen, (uint16_t)s)
             : finishUdp(txbuf, peer.mac, peer.ip, PORT_ECHO, peer.port, plen, (uint16_t)s);
-        if (eth.sendFrame(txbuf, flen)) ok++;
+        if (ah ? asyncSendWait(txbuf, flen) : eth.sendFrame(txbuf, flen)) ok++;
         else fail++;
         if (gapUs) delayMicroseconds(gapUs);
     }
-    st.tx += ok;
-    st.txf += fail;
+    if (!ah) {  // asyncSend() has counted its frames by itself
+        st.tx += ok;
+        st.txf += fail;
+    }
     Serial.printf("TXDONE sent=%lu fail=%lu\n", (unsigned long)ok, (unsigned long)fail);
 }
 
@@ -862,10 +1080,132 @@ static void cmdTsv(uint16_t len, bool broadcast)
                   v[4] | (v[5] << 8), v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
 }
 
+// ASYNC 1: hand the chip to the C driver in its asynchronous mode, in place of the class. ASYNC 0 gives it back.
+static void cmdAsyncOn()
+{
+    if (ah) {
+        Serial.println("ASYNCERR active");
+        return;
+    }
+    eth.end();  // gives back the chip, the state machine and the INT pin
+    asyncConfig();
+    enc28j60_status status;
+    ah = enc28j60_init_status(&acfg, &status);
+    if (!ah) {
+        Serial.printf("ASYNCERR %s\n", enc28j60_status_string(status));
+        eth.begin(makeConfig());  // the class has the chip again
+        return;
+    }
+    // The interrupt sources that the FreeRTOS driver enables; without irq_cb the C driver leaves them all off
+    enc28j60_irq_enable_blk(ah, PKTIE | LINKIE | TXIE | RXERIE);
+    uploadedId = txInProgress = ENC28J60_INVALID_FRAME_ID;
+    notified = false;
+    check = false;
+    discardEvery = 0;
+    rxSeen = 0;
+#ifdef BENCH_IRQ_PIN
+    pinMode(BENCH_IRQ_PIN, INPUT_PULLUP);
+    attachInterrupt(BENCH_IRQ_PIN, []() { intFlag = true; }, FALLING);
+    intFlag = true;  // the line may be low already: the first pass runs whatever happens
+#endif
+    Serial.println("OK");
+}
+
+static void cmdAsyncOff()
+{
+    if (!ah) {
+        Serial.println("ASYNCERR inactive");
+        return;
+    }
+#ifdef BENCH_IRQ_PIN
+    detachInterrupt(BENCH_IRQ_PIN);
+#endif
+    enc28j60_deinit(ah);
+    ah = nullptr;
+    uploadedId = txInProgress = ENC28J60_INVALID_FRAME_ID;
+    if (eth.begin(makeConfig())) Serial.println("OK");
+    else Serial.println("ASYNCERR begin");
+}
+
+// AOPT <check 0/1> <n>: read ERXRDPT back after every frame (check), and drop every n-th frame unseen (0 = none)
+static void cmdAsyncOpt(bool readBack, uint32_t every)
+{
+    if (!ah) {
+        Serial.println("ASYNCERR inactive");
+        return;
+    }
+    check = readBack;
+    discardEvery = every;
+    rxSeen = 0;
+    Serial.println("OK");
+}
+
+static int claimedDmaChannels()
+{
+    int n = 0;
+    for (uint i = 0; i < NUM_DMA_CHANNELS; i++) n += dma_channel_is_claimed(i);
+    return n;
+}
+
+// ASYNCCYCLE <n>: with the class stopped, start the C driver in its asynchronous mode and stop it again, n times,
+// asking it something that goes through DMA each time. What stopping has to give back (DMA channels, heap) is counted
+// before and after. A driver that keeps the 3 channels it takes runs out of them (the RP2040 has 12) and panics, so
+// a line goes out before each start to show how far a run got. The class is started again at the end.
+static void cmdAsyncCycle(uint32_t n)
+{
+    if (ah) {
+        Serial.println("ASYNCERR active");
+        return;
+    }
+    eth.end();
+    int dmaBefore = claimedDmaChannels();
+    int heapBefore = rp2040.getFreeHeap();
+    uint32_t waitBefore = st.waitTimeouts, ok = 0;
+    // A driver that runs out of DMA channels panics, and the panic stops the USB too: the board would stay dead until
+    // it is unplugged. The watchdog starts it again instead, and bench.py sees a board that stopped answering.
+    watchdog_enable(4000, true);
+    for (uint32_t i = 1; i <= n; i++) {
+        watchdog_update();
+        Serial.printf("ASYNCCYCLE_STEP %lu\n", (unsigned long)i);
+        Serial.flush();
+        asyncConfig();
+        enc28j60* h = enc28j60_init_status(&acfg, nullptr);
+        if (!h) continue;
+        uint32_t w0 = st.waitTimeouts;
+        enc28j60_rx_count(h);  // a list through DMA: it only comes back in time if the callbacks work
+        uint8_t rev = enc28j60_revision_blk(h);
+        if (st.waitTimeouts == w0 && rev >= 1 && rev <= 0x1f) ok++;
+        enc28j60_deinit(h);
+    }
+    watchdog_disable();
+    int dmaAfter = claimedDmaChannels();
+    int heapAfter = rp2040.getFreeHeap();
+    bool began = eth.begin(makeConfig());
+    Serial.printf("ASYNCCYCLE n=%lu ok=%lu dma_before=%d dma_after=%d heap_before=%d heap_after=%d waitto=%lu "
+                  "began=%d\n",
+                  (unsigned long)n, (unsigned long)ok, dmaBefore, dmaAfter, heapBefore, heapAfter,
+                  (unsigned long)(st.waitTimeouts - waitBefore), began);
+}
+
+// While the C driver has the chip the class is stopped, and the commands that go through it would use a null driver
+// handle: only these are served in that mode.
+static bool worksInAsyncMode(const char* line)
+{
+    static const char* const names[] = {"IP ", "INFO", "STAT", "RESET", "ID", "ASYNC ", "AOPT ", "TX ", "TXB "};
+    for (const char* name : names) {
+        if (strncmp(line, name, strlen(name)) == 0) return true;
+    }
+    return false;
+}
+
 static void handleCommand(char* line)
 {
     unsigned a, b, c, d;
     unsigned long n, g;
+    if (ah && line[0] && !worksInAsyncMode(line)) {
+        Serial.println("ASYNCERR active");
+        return;
+    }
     if (strncmp(line, "IP ", 3) == 0 && sscanf(line + 3, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
         myIp[0] = a;
         myIp[1] = b;
@@ -920,6 +1260,14 @@ static void handleCommand(char* line)
         cmdTx(true, n, (uint16_t)a, g);
     } else if (sscanf(line, "TX %lu %u %lu", &n, &a, &g) == 3) {
         cmdTx(false, n, (uint16_t)a, g);
+    } else if (strcmp(line, "ASYNC 1") == 0) {
+        cmdAsyncOn();
+    } else if (strcmp(line, "ASYNC 0") == 0) {
+        cmdAsyncOff();
+    } else if (sscanf(line, "AOPT %u %u", &a, &b) == 2) {
+        cmdAsyncOpt(a != 0, b);
+    } else if (sscanf(line, "ASYNCCYCLE %lu", &n) == 1) {
+        cmdAsyncCycle(n);
     } else if (line[0]) {
         Serial.println("ERR unknown");
     }
@@ -1051,6 +1399,10 @@ void setup()
 void loop()
 {
     pollSerial();
+    if (ah) {  // asynchronous mode; HOLD and CBMODE do not apply
+        asyncPoll();
+        return;
+    }
     // The chip is touched only when it asks for it: through its INT pin if it is
     // wired, by looking at its flags otherwise. In CBMODE the callback asks.
     if (eth.isInitialized() && !hold) {

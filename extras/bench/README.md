@@ -41,6 +41,31 @@ runs on top of the interrupt, and three more tests check the interrupt itself:
 
 `rx` also reports whether `receiveFrame()` includes the 4-byte Ethernet FCS.
 
+## The asynchronous functions of the C driver
+
+The C driver has two sets of functions: the blocking ones (`*_blk`), which the Arduino classes use, and the
+asynchronous ones, which build a list of commands, send it through DMA and wait for an interrupt. Only the
+FreeRTOS+TCP driver in `freertos/` uses the asynchronous ones, and that driver is not built here. `BenchTest` can serve
+the chip with them in place of the Arduino class: the serial command `ASYNC 1` hands the chip over, `ASYNC 0` gives it
+back, and in between `loop()` does what the interrupt branch of the task of the FreeRTOS driver does, call for call
+(`AOPT` sets whether the read pointer of the chip is checked after every frame and whether frames are dropped unseen).
+`bench.py` switches the mode by itself: once for the first six tests below, which run one after the other, and
+`asynccycle` runs last of all and does its own starting and stopping.
+
+| Test      | What it proves                                                              |
+|-----------|-----------------------------------------------------------------------------|
+| `asyncrx` | 200 frames of mixed sizes through `enc28j60_frame_rx()`, with `ERXRDPT` read back from the chip after every frame: it is odd each time (silicon errata, issue 14), and every frame arrives intact and in order |
+| `asyncdiscard` | `enc28j60_frame_discard()` on every frame: none is delivered, `ERXRDPT` is odd after each, and a clean stream follows |
+| `asyncfast` | 3000 small frames 1 ms apart, with no delay and no other SPI between one asynchronous call and the next, as in the FreeRTOS driver: all arrive intact and in order, no frame header is bad, no wait for the DMA times out, and nothing is left in the buffer |
+| `asyncecho` | 200 unicast UDP round trips, each reply sent right after the frame was read |
+| `asynctx` | 200 broadcast frames sent with `enc28j60_frame_upload()` and `enc28j60_frame_tx()`, one waiting and one on the wire, the transmit interrupt moving the next one to the transmitter: all of them arrive |
+| `asyncflood` | back-to-back full-size frames overflow the receive buffer: what arrives is intact, no frame header is bad, no wait times out, and a clean stream follows |
+| `asynccycle` | `enc28j60_init()` and `enc28j60_deinit()` eight times in a row, with a command through DMA each time: the same DMA channels are claimed and the same heap is free afterwards. It runs last because a driver that keeps the 3 channels it takes at each start runs out of the 12 of the RP2040 and stops the firmware; the board prints `ASYNCCYCLE_STEP n` before each start, so a run that dies shows how far it got |
+
+The six tests that share the session also check that no wait for the DMA timed out (`waitto`) and, where the board
+sends, that no frame was given up for lack of room (`txto`). In this mode the Arduino class is stopped, so the
+board answers `ASYNCERR active` to the commands that go through it.
+
 ## What you need
 
 * A Pico wired to an ENC28J60 and cabled to the same LAN as the PC. The sketch

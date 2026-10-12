@@ -21,6 +21,14 @@ status of a transmitted frame. Others go through the rest of the public API: the
 functions that only look and discardFrame() on frames that wait in the buffer,
 hasLinkChange(), setMACAddress() and the interrupt callback.
 
+The C driver also has asynchronous functions (DMA with notification callbacks) that only the FreeRTOS+TCP driver
+uses. Seven more tests go through them: the board hands the chip over (its ASYNC command) and serves it the way that
+driver does. asyncrx and asyncdiscard read ERXRDPT back after every frame and want it odd; asyncfast and asyncecho
+call the next function with nothing in between; asynctx sends through the upload slot and the transmit interrupt;
+asyncflood overloads the receiver; asynccycle starts and stops the driver over and over to see that it gives back its
+DMA channels and its memory. It runs last, because a driver that keeps the channels runs out of them and stops the
+firmware.
+
 Needs pyserial, arduino-cli (only with --flash) and a free IPv4 address on the
 LAN for the board, and a second one for the setmac test (--alt-ip, by default the
 address of the board plus two). No root required.
@@ -48,7 +56,9 @@ PORT_RX, PORT_ECHO, PORT_TX, PEER_PORT = 9999, 9997, 9998, 9998
 SIZES = [10, 18, 100, 400, 800, 1200, 1472]  # UDP payload sizes
 ALL_TESTS = ["init", "cfgerr", "pioful", "spi", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong",
              "txbburst", "soak", "rxflood", "rxoverflow", "discard", "callback", "linkflag", "setmac", "txstat",
-             "pioshare", "stall", "lifecycle", "txmix", "lostchip"]
+             "pioshare", "stall", "lifecycle", "txmix", "lostchip", "asyncrx", "asyncdiscard", "asyncfast", "asyncecho",
+             "asynctx", "asyncflood", "asynccycle"]
+ASYNC_TESTS = ["asyncrx", "asyncdiscard", "asyncfast", "asyncecho", "asynctx", "asyncflood"]  # one ASYNC session
 DEFAULT_SPI_HZ = 10000000  # ENC28J60Config::spi_hz
 SPI_SPEEDS = [1000000, 3500000, 8000000, 10000000, 12500000, 16000000, 20000000]  # Hz, for the spi test
 IRQ_TESTS = ["irqidle", "irqedge", "irqlink"]  # only with --irq
@@ -101,7 +111,8 @@ class Pico:
     def send(self, text):
         self.s.write((text + "\n").encode())
 
-    def expect(self, prefix, timeout=5.0):
+    def expect(self, prefix, timeout=5.0, skipped=None):
+        """Wait for a line that starts with prefix (or any of a tuple of them); `skipped`, if given, collects the others."""
         deadline = time.time() + timeout
         while True:
             line = self._readline(deadline)
@@ -109,6 +120,8 @@ class Pico:
                 raise TimeoutError("no '%s' reply within %ss" % (prefix, timeout))
             if line.startswith(prefix):
                 return line
+            if skipped is not None:
+                skipped.append(line)
 
     def cmd(self, text, prefix, timeout=5.0):
         self.s.reset_input_buffer()
@@ -286,9 +299,10 @@ def t_soak(p, host_ip, count=5000):
                                   s["runt"], s["rxz"], num(s, "frames") - num(s, "bench")))
 
 
-def t_rxflood(p, host_ip, count=3000):
+def t_rxflood(p, host_ip, count=3000, name="rxflood", board_async=False):
     """Overload the receiver on purpose. Frames may be lost, but what arrives must be intact and the
-    receiver must work normally afterwards."""
+    receiver must work normally afterwards. With board_async (asyncflood) the board is in its asynchronous mode, where
+    no frame header may make no sense and no wait for the DMA may time out either."""
     p.cmd("RESET", "OK")
     # Big frames, no pacing: they reach the board back to back at the 10 Mbit/s of
     # its port. At the default SPI clock the chip cannot drain its 4 KB receive buffer
@@ -301,13 +315,22 @@ def t_rxflood(p, host_ip, count=3000):
     got, lost = num(s, "bench"), count - num(s, "bench")
     ok1 = intact and got > 0
     wait_quiet(p)  # frames queued in the switch keep arriving for a while after the flood
+    flooded = stats(p) if board_async else s  # the flood has been served by now
     p.cmd("RESET", "OK")
     s2 = stream_rx(p, host_ip, 50, 0.01, [100])
     ok2 = (num(s2, "bench") == 50 and num(s2, "gap") == 0 and num(s2, "bad") == 0 and
            num(s2, "dup") == 0 and num(s2, "stale") == 0)
-    record("rxflood", ok1 and ok2, "flood of %d frames: %d received intact, %d lost (the buffer of the chip overflowed "
-           "in %s of the service passes), dup=%s stale=%s bad=%s, recoveries=%s; clean stream afterwards: %s/50" %
-           (count, got, lost, s["peekrxe"], s["dup"], s["stale"], s["bad"], s["rxz"], s2["bench"]))
+    sound, tail = True, ""
+    if board_async:
+        # A frame that the driver never takes stays in the buffer of the chip: none may be left after the clean stream
+        sound = all(num(x, k) == 0 for x in (flooded, s2) for k in ("hdrbad", "waitto")) and num(s2, "pend") == 0
+        tail = "; bad headers %s and %s, wait timeouts %s and %s (flood, clean stream), frames left in the buffer %s" % (
+            flooded["hdrbad"], s2["hdrbad"], flooded["waitto"], s2["waitto"], s2["pend"])
+    record(name, ok1 and ok2 and sound, "flood of %d frames: %d received intact, %d lost (the buffer of the chip "
+           "overflowed in %s of the service passes), dup=%s stale=%s bad=%s, recoveries=%s; clean stream afterwards: "
+           "%s/50 (gap=%s)%s" %
+           (count, got, lost, s["rxe" if board_async else "peekrxe"], s["dup"], s["stale"], s["bad"], s["rxz"],
+            s2["bench"], s2["gap"], tail))
 
 
 def t_rxoverflow(p, host_ip, irq, count=12, plen=1472):
@@ -349,7 +372,8 @@ def t_rxoverflow(p, host_ip, irq, count=12, plen=1472):
             ", INT line %s" % ("high" if line_after == 1 else "LOW") if irq else "", s2["bench"]))
 
 
-def t_echo(p, host_ip, pico_ip, count=200):
+def run_echo(p, host_ip, pico_ip, count):
+    """`count` unicast UDP round trips PC -> board -> PC. Returns lost, corrupted, average rtt in ms and the board's STAT."""
     p.cmd("RESET", "OK")
     sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sk.bind((host_ip, PEER_PORT))
@@ -371,6 +395,11 @@ def t_echo(p, host_ip, pico_ip, count=200):
     sk.close()
     s = stats(p)
     avg = 1000 * sum(rtts) / len(rtts) if rtts else float("nan")
+    return lost, bad, avg, s
+
+
+def t_echo(p, host_ip, pico_ip, count=200):
+    lost, bad, avg, s = run_echo(p, host_ip, pico_ip, count)
     record("echo", lost == 0 and bad == 0,
            "%d unicast round trips: lost=%d corrupted=%d avg rtt=%.1f ms; board: echo=%s txf=%s" %
            (count, lost, bad, avg, s["echo"], s["txf"]))
@@ -791,6 +820,151 @@ def t_irqlink(p, ping_ip):
             link, got))
 
 
+def aopt(p, check, discard_every):
+    """The options of the receive path of the board in its asynchronous mode (AOPT)."""
+    reply = p.cmd("AOPT %d %d" % (check, discard_every), ("OK", "ASYNCERR"))
+    if reply != "OK":
+        raise RuntimeError("AOPT answered '%s'" % reply)
+
+
+def async_enter(p):
+    """ASYNC 1: the chip goes to the C driver in its asynchronous mode. The chip is reset, so wait for the link to come
+    back. Returns (the board is in the mode, it can be used); a failure is recorded as asyncmode."""
+    reply = p.cmd("ASYNC 1", ("OK", "ASYNCERR"), 30)
+    if reply != "OK":
+        record("asyncmode", False, "ASYNC 1 was answered with '%s'" % reply)
+        return False, False
+    if not wait_link(p):
+        record("asyncmode", False, "no link 25 s after ASYNC 1")
+        return True, False
+    return True, True
+
+
+def async_leave(p):
+    """ASYNC 0: the Arduino class takes the chip back."""
+    reply = p.cmd("ASYNC 0", ("OK", "ASYNCERR"), 30)
+    if reply != "OK":
+        record("asyncmode", False, "ASYNC 0 was answered with '%s'" % reply)
+    wait_link(p)
+
+
+def guarded(name, test):
+    """A test that needs the board to answer: if the board stops, that is the result, and the next test still runs."""
+    try:
+        test()
+    except (TimeoutError, RuntimeError, serial.SerialException) as e:
+        record(name, False, "the test could not finish: %s" % e)
+
+
+def t_asyncrx(p, host_ip, count=200):
+    """The asynchronous receive path, with ERXRDPT read back from the chip after every frame: the chip needs it odd
+    (silicon errata, issue 14), so the driver has to leave it odd."""
+    aopt(p, 1, 0)
+    p.cmd("RESET", "OK")
+    s = stream_rx(p, host_ip, count, 0.01, SIZES)
+    good = (num(s, "bench") == count and num(s, "dup") == 0 and num(s, "stale") == 0 and num(s, "gap") == 0 and
+            num(s, "bad") == 0 and num(s, "hdrbad") == 0 and num(s, "waitto") == 0 and num(s, "pend") == 0 and
+            num(s, "rdptchk") >= count and num(s, "rdpteven") == 0)
+    record("asyncrx", good, "sent %d broadcast frames; board: ok=%s dup=%s stale=%s gap=%s bad=%s, bad headers=%s, "
+           "wait timeouts=%s, frames left in the buffer=%s; ERXRDPT read back after %s frames, even %s times (the last "
+           "0x%04X, after a frame whose next-packet pointer was 0x%04X)" %
+           (count, s["bench"], s["dup"], s["stale"], s["gap"], s["bad"], s["hdrbad"], s["waitto"], s["pend"],
+            s["rdptchk"], s["rdpteven"], num(s, "rdptlast"), num(s, "nextlast")))
+
+
+def t_asyncdiscard(p, host_ip, count=100):
+    """enc28j60_frame_discard() on every frame: none is delivered, ERXRDPT is odd after each, and the receiver is in
+    step afterwards."""
+    aopt(p, 1, 1)
+    p.cmd("RESET", "OK")
+    s = stream_rx(p, host_ip, count, 0.01, SIZES)
+    aopt(p, 1, 0)
+    p.cmd("RESET", "OK")
+    s2 = stream_rx(p, host_ip, 50, 0.01, [100])
+    good = (num(s, "bench") == 0 and num(s, "dis") >= count and num(s, "rdpteven") == 0 and num(s, "hdrbad") == 0 and
+            num(s, "waitto") == 0 and num(s2, "bench") == 50 and num(s2, "gap") == 0 and num(s2, "bad") == 0 and
+            num(s2, "dup") == 0 and num(s2, "stale") == 0 and num(s2, "hdrbad") == 0 and num(s2, "waitto") == 0)
+    record("asyncdiscard", good, "sent %d broadcast frames to a board that drops every one unseen: delivered %s, "
+           "discarded %s, bad headers=%s, wait timeouts=%s; ERXRDPT read back after %s frames, even %s times (the last "
+           "0x%04X, after a frame whose next-packet pointer was 0x%04X); clean stream afterwards %s/50 (gap=%s)" %
+           (count, s["bench"], s["dis"], s["hdrbad"], s["waitto"], s["rdptchk"], s["rdpteven"], num(s, "rdptlast"),
+            num(s, "nextlast"), s2["bench"], s2["gap"]))
+
+
+def t_asyncfast(p, host_ip, count=3000):
+    """Small frames 1 ms apart, and nothing between one asynchronous call and the next: the driver is called again
+    right after a frame was read, the way the FreeRTOS driver calls it."""
+    aopt(p, 0, 0)
+    p.cmd("RESET", "OK")
+    stream_rx(p, host_ip, count, 0.001, [18, 100])
+    wait_quiet(p)
+    s = stats(p)
+    good = (num(s, "bench") == count and num(s, "dup") == 0 and num(s, "stale") == 0 and num(s, "gap") == 0 and
+            num(s, "bad") == 0 and num(s, "hdrbad") == 0 and num(s, "waitto") == 0 and num(s, "pend") == 0)
+    record("asyncfast", good, "sent %d small broadcast frames 1 ms apart; board: ok=%s dup=%s stale=%s gap=%s bad=%s, "
+           "bad headers=%s, wait timeouts=%s, still in the buffer=%s" %
+           (count, s["bench"], s["dup"], s["stale"], s["gap"], s["bad"], s["hdrbad"], s["waitto"], s["pend"]))
+
+
+def t_asyncecho(p, host_ip, pico_ip, count=200):
+    """Unicast round trips with the reply sent right after the frame was read, so the next asynchronous call follows
+    at once."""
+    aopt(p, 0, 0)
+    lost, bad, avg, s = run_echo(p, host_ip, pico_ip, count)
+    record("asyncecho", lost == 0 and bad == 0 and num(s, "waitto") == 0 and num(s, "txto") == 0,
+           "%d unicast round trips: lost=%d corrupted=%d avg rtt=%.1f ms; board: echo=%s txf=%s, wait timeouts=%s, "
+           "upload slot timeouts=%s, bad headers=%s" %
+           (count, lost, bad, avg, s["echo"], s["txf"], s["waitto"], s["txto"], s["hdrbad"]))
+
+
+def t_asynctx(p, host_ip, count=200, plen=300, gap_us=3000):
+    """Broadcast frames sent with enc28j60_frame_upload() and enc28j60_frame_tx(), one waiting and one on the wire,
+    the transmit interrupt moving the next one to the transmitter."""
+    aopt(p, 0, 0)
+    got, dup, corrupt, sent, fail = run_txb(p, host_ip, count, plen, gap_us)
+    s = stats(p)
+    record("asynctx", got == count and dup == 0 and corrupt == 0 and fail == 0 and num(s, "waitto") == 0 and
+           num(s, "txto") == 0,
+           "board sent ok=%d failed=%d (%d B payload, %d us gap, broadcast); host received %d/%d, duplicates=%d "
+           "corrupted=%d; transmit interrupts confirmed %s frames, wait timeouts=%s, upload slot timeouts=%s, "
+           "uploads refused=%s" %
+           (sent, fail, plen, gap_us, got, count, dup, corrupt, s["txconf"], s["waitto"], s["txto"], s["txupf"]))
+
+
+def t_asyncflood(p, host_ip):
+    """The flood of rxflood, through the asynchronous functions."""
+    aopt(p, 0, 0)
+    t_rxflood(p, host_ip, name="asyncflood", board_async=True)
+
+
+def t_asynccycle(p, cycles=8):
+    """The C driver started and stopped `cycles` times in its asynchronous mode: every start works, and at the end the
+    same DMA channels are claimed and the same heap is free. A driver that keeps its channels runs out of them and the
+    firmware panics: then the last ASYNCCYCLE_STEP line says how far it got."""
+    seen = []
+    p.s.reset_input_buffer()
+    p.rx = b""
+    p.send("ASYNCCYCLE %d" % cycles)
+    try:
+        line = p.expect(("ASYNCCYCLE n=", "ASYNCERR"), 30, seen)
+    except (TimeoutError, serial.SerialException) as e:
+        steps = [x.split()[-1] for x in seen if x.startswith("ASYNCCYCLE_STEP")]
+        other = [x for x in seen if not x.startswith("ASYNCCYCLE_STEP")]
+        record("asynccycle", False, "the board stopped answering (%s); the last step it reported was %s of %d%s" %
+               (e, steps[-1] if steps else "none", cycles, "; it also printed: " + " | ".join(other[-3:]) if other else ""))
+        return
+    if line.startswith("ASYNCERR"):
+        record("asynccycle", False, "the board answered '%s'" % line)
+        return
+    d = kv(line)
+    good = (num(d, "n") == cycles and num(d, "ok") == cycles and num(d, "dma_after") == num(d, "dma_before") and
+            num(d, "heap_after") == num(d, "heap_before") and num(d, "waitto") == 0 and num(d, "began") == 1)
+    record("asynccycle", good, "%s of %s starts and stops worked; DMA channels claimed %s before and %s after, free heap "
+           "%s B before and %s B after; wait timeouts=%s; the class began again: %s" %
+           (d["ok"], d["n"], d["dma_before"], d["dma_after"], d["heap_before"], d["heap_after"], d["waitto"],
+            "yes" if num(d, "began") else "NO"))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ip", required=True, help="free IPv4 address on the LAN for the board")
@@ -878,6 +1052,27 @@ def main():
                 t_irqedge(p, host_ip)
             if "irqlink" in wanted:
                 t_irqlink(p, args.ip)
+        # The asynchronous functions of the C driver: the six tests share one session in the board's asynchronous
+        # mode. asynccycle starts and stops the driver by itself and goes last of all, because a driver that does not
+        # give back its DMA channels can kill the firmware.
+        async_wanted = [t for t in ASYNC_TESTS if t in wanted]
+        if async_wanted:
+            in_mode, usable = async_enter(p)
+            if usable:
+                runners = {
+                    "asyncrx": lambda: t_asyncrx(p, host_ip),
+                    "asyncdiscard": lambda: t_asyncdiscard(p, host_ip),
+                    "asyncfast": lambda: t_asyncfast(p, host_ip),
+                    "asyncecho": lambda: t_asyncecho(p, host_ip, args.ip),
+                    "asynctx": lambda: t_asynctx(p, host_ip),
+                    "asyncflood": lambda: t_asyncflood(p, host_ip),
+                }
+                for name in async_wanted:
+                    guarded(name, runners[name])
+            if in_mode:
+                async_leave(p)
+        if "asynccycle" in wanted:
+            t_asynccycle(p)
     else:
         print("no link: skipping the traffic tests")
 
