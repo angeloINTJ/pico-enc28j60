@@ -368,12 +368,13 @@ fork added.
 | `freertos/` | The FreeRTOS+TCP driver of the original project, outside `src/` so that the Arduino IDE does not compile it |
 | `imgs/` | Photographs used by this README |
 
-## Reporting problems
+## Reporting problems and contributing
 
 Open an [issue](https://github.com/angeloINTJ/pico-enc28j60/issues). Say which board
 and which version of the arduino-pico core you use, how the chip is wired (the
 `ENC28J60Config` you pass), and, if you can run it, what `extras/bench/bench.py`
-prints.
+prints. [CONTRIBUTING.md](CONTRIBUTING.md) says how the repository is checked before a
+change is sent.
 
 ## References
 

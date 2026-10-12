@@ -1,0 +1,56 @@
+name: Bug report
+description: Something does not work, or does not work the way the documentation says
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. The more of this you fill in, the faster it can be
+        looked at. `lastError()` and `stats()` (or `driverStats()`) say a lot.
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which layer
+      options:
+        - PicoENC28J60 (raw frames)
+        - PicoENC28J60lwIP (TCP/IP)
+        - The C driver
+        - Examples or the bench
+        - Documentation
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version of this library
+      placeholder: "1.1.0, or the commit"
+    validations:
+      required: true
+  - type: input
+    id: core
+    attributes:
+      label: Board and version of the arduino-pico core
+      placeholder: "Raspberry Pi Pico, arduino-pico 6.3.0"
+    validations:
+      required: true
+  - type: textarea
+    id: wiring
+    attributes:
+      label: Wiring and configuration
+      description: The ENC28J60 module you use, how it is connected, and the `ENC28J60Config` you pass.
+      render: cpp
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens, and what you expected
+      description: Include what `lastError()`, `errorString()` and `stats()` print if they are involved.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce it
+      description: A small sketch is best. If you can run `extras/bench/bench.py`, paste what it prints.
+      render: cpp

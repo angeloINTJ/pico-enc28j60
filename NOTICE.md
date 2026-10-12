@@ -48,10 +48,10 @@ Written for this fork:
 * `examples/`: `BasicTest`, `AdvancedTest`, `WebServerLedToggle`.
 * `extras/bench/`: the on-hardware test harness (`BenchTest.ino`, `bench.py`,
   `BenchLwip.ino`, `benchlwip.py`, `webtest.py`) and `extras/tools/`.
-* `.github/workflows/ci.yml`.
+* `.github/`: the CI workflow and the form for bug reports.
 * `library.properties`, `keywords.txt`, `.gitattributes`, `NOTICE.md`,
-  `CHANGELOG.md`, `README.md`, which describes the Arduino library, and the section
-  of `docs/c-driver.md` that lists what this fork added to the C driver.
+  `CHANGELOG.md`, `CONTRIBUTING.md`, `README.md`, which describes the Arduino library,
+  and the section of `docs/c-driver.md` that lists what this fork added to the C driver.
 * `src/enc28j60-spi.pio.h` is the output of `pioasm` for the PIO program above,
   committed because the Arduino IDE cannot run `pioasm`.
 
