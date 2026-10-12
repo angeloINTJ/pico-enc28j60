@@ -21,6 +21,15 @@
 
 #include <Arduino.h>
 
+// The library is written for the arduino-pico core (Earle F. Philhower, III)
+// and uses the Pico SDK 2 that it brings from version 4.0.0 on. The Arduino
+// Mbed OS RP2040 boards have neither.
+#ifndef ARDUINO_PICO_MAJOR
+#error "PicoENC28J60 needs the arduino-pico core, not Arduino Mbed OS"
+#elif ARDUINO_PICO_MAJOR < 4
+#error "PicoENC28J60 needs arduino-pico 4.0.0 or newer"
+#endif
+
 /**
  * @brief Pin, MAC address and buffer configuration
  *

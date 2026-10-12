@@ -94,6 +94,11 @@ Install it from this repository; the Arduino Library Manager does not list it ye
 
 What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 
+Requirements: the [arduino-pico](https://github.com/earlephilhower/arduino-pico) core,
+4.0.0 or newer for `PicoENC28J60.h` (built with 4.0.0, 5.0.0 and 6.x) and 5.6.0 or newer
+for `PicoENC28J60lwIP.h` (built with 5.6.0 and 6.x). The Arduino Mbed OS RP2040 boards are
+not supported. Everything was run on 6.3.0.
+
 ### Quick start: a web page that toggles the LED
 
 `examples/WebServerLedToggle` gets an address from DHCP and serves a page with a

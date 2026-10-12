@@ -116,6 +116,39 @@ jobs:
             - --build-property
             - compiler.cpp.extra_flags=-DINT_PIN=6 -DBENCH_IRQ_PIN=6
 
+  oldest-core:
+    # The oldest cores that the library says it works with: 4.0.0 for the raw
+    # frames, 5.6.0 for the lwIP interface (which has to be compiled with it)
+    name: core ${{ matrix.core }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - core: 4.0.0
+            sketches: |
+              - examples/BasicTest
+              - examples/AdvancedTest
+          - core: 5.6.0
+            sketches: |
+              - examples/BasicTest
+              - examples/WebServerLedToggle
+              - extras/bench/BenchLwip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/compile-sketches@v1
+        with:
+          fqbn: rp2040:rp2040:rpipico
+          platforms: |
+            - name: rp2040:rp2040
+              source-url: ${{ env.ARDUINO_PICO_INDEX }}
+              version: ${{ matrix.core }}
+          libraries: |
+            - source-path: ./
+          sketch-paths: ${{ matrix.sketches }}
+          cli-compile-flags: |
+            - --warnings=all
+
   latest-core:
     # An early warning when a new version of the core breaks the library; it
     # does not hold a change back

@@ -50,6 +50,14 @@
  *     PicoENC28J60lwIP eth(cfg);
  */
 
+// The interface needs __getEthernetContext() and the async context of the lwIP
+// of the core, which arduino-pico has from 5.6.0 on
+#if defined(ARDUINO_PICO_MAJOR) &&                           \
+    (ARDUINO_PICO_MAJOR * 10000 + ARDUINO_PICO_MINOR * 100 + \
+     ARDUINO_PICO_REVISION) < 50600
+#error "PicoENC28J60lwIP.h needs arduino-pico 5.6.0 or newer"
+#endif
+
 #include <LwipEthernet.h>
 #include <LwipIntfDev.h>
 #include <WiFi.h>

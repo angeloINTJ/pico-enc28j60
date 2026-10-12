@@ -41,6 +41,10 @@ silicon errata. The lwIP interface without the INT pin answers faster.
   the cable being pulled out and put back.
 * A GitHub Actions workflow: `arduino-lint`, the formatting of the sources, and a build
   of every example for the Pico, Pico W, Pico 2 and Pico 2 W.
+* A message at compile time when the core is too old or is not arduino-pico: the raw
+  class needs 4.0.0 or newer (checked with 4.0.0), the lwIP interface 5.6.0 or newer
+  (checked with 5.6.0; before that the core has no `__getEthernetContext()`). The CI
+  builds with both.
 
 ### Fixed
 
