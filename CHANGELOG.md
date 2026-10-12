@@ -1,5 +1,75 @@
 # Changelog
 
+## Unreleased
+
+The asynchronous functions of the C driver, the ones the FreeRTOS+TCP driver uses, had
+never been run in this fork. The bench now runs them the way that driver does, and they
+did not work: they corrupted the state of the chip within the first frames. They work
+now, and follow the same silicon errata as the blocking functions. The tools that check
+a change before it goes in (the hardware gate, a check of every commit, the timing of
+the PIO program) are part of the repository now.
+
+### Fixed
+
+* An asynchronous call came back too early. `enc28j60_frame_rx()` reads the frame and
+  then, in the same DMA list, moves the read pointers and decrements the packet counter;
+  it returned as soon as the last byte of the frame was in, while those commands were
+  still going out, and the next call started the DMA again under them. On the bench,
+  3000 small frames received the way the FreeRTOS driver receives them gave 328 frame
+  headers that made no sense, 138 DMA lists that never finished, and no frame intact;
+  the chip received nothing afterwards. A call now returns when both the commands and
+  what they read are through, and the same 3000 frames arrive intact.
+* `enc28j60_frame_rx()` and `enc28j60_frame_discard()` wrote the next-packet pointer,
+  which the hardware always makes even, to `ERXRDPT`, which the silicon errata (issue 14)
+  say must be odd or the receive buffer may be corrupted. Read back from the chip after
+  every frame, it was even 204 times out of 204; it is odd every time now.
+* `enc28j60_frame_tx()` did not reset the transmit logic before a frame (issue 12); it
+  does now, and also withdraws a request that an abort left pending.
+* After a late collision the chip may raise TXERIF and never TXIF (issue 13, revisions B5
+  and B7), and the FreeRTOS driver, which waited for TXIF, would never have sent another
+  frame. `enc28j60_irq_is_tx()` is true for either flag now, and with an interrupt
+  callback TXERIF drives the INT pin too. The frame itself is not sent again in this mode.
+* `enc28j60_irq_flags()` returned PKTIF as the chip has it, which issue 6 says is not
+  reliable, and the FreeRTOS driver reads a frame only when PKTIF is set. It comes from
+  the packet counter now, as in `enc28j60_irq_flags_blk()`. After an overload of the
+  receive buffer, 3 of 5 runs without it went wrong: once a frame of the stream that
+  followed was missing, once frames of the overload turned up in the middle of it after
+  more than a second of quiet. With it, 4 of 4 runs were clean.
+* `enc28j60_deinit()` kept the three DMA channels, the shared DMA interrupt handler and
+  the memory of the asynchronous mode, and the fourth start in a row stopped the
+  firmware. Eight starts and stops now leave the same DMA channels claimed and the same
+  heap free as before. `enc28j60_init_status()` returns `ENC28J60_ERR_DMA` instead of
+  stopping the program when fewer than three DMA channels are free, and refuses a
+  `dma_irq` other than 0 or 1.
+* The FreeRTOS driver released the frame in progress whenever a transmit flag was set,
+  even with none in progress, which would have broken the accounting of the transmit
+  buffer. When the driver cannot start, it now says why (`enc28j60_status_string()`)
+  instead of always blaming the wiring. This file is still not built by the CI; it was
+  compiled for this change against the headers of FreeRTOS-Plus-TCP V4.3.4.
+* The command macros of the C driver used their arguments without parentheses, so
+  `BFC_CMD(ECON1, TXRTS | 0x3)` would have masked only the `0x3`. The firmware built from
+  the code that uses them is the same, byte for byte.
+
+### Added
+
+* `enc28j60_irq_is_tx_err()` and the status `ENC28J60_ERR_DMA` in the C driver.
+* `extras/bench`: an asynchronous mode of `BenchTest`, which gives the chip to the
+  asynchronous functions and runs the interrupt branch of the FreeRTOS driver on them,
+  and seven tests in `bench.py`: reception with `ERXRDPT` read back, frames dropped
+  unseen, a stream of small frames with no pause between calls, UDP echo, a transmit
+  stream, an overload, and eight starts and stops of the driver (under a watchdog, so
+  that a driver that stops the firmware restarts the board).
+* `extras/bench/gate.sh` runs every suite of the bench on a board, polled and with the
+  INT pin, and writes a summary; a change to the driver, the PIO program or the lwIP
+  interface goes in only after it passed.
+* `extras/tools/check-commits.sh` checks every commit of a branch (formatting, links,
+  four sketches built); `extras/tools/check-format.sh` is the formatting check of the CI,
+  in one place.
+* `extras/tools/pio-sim.py` simulates the SPI program of the PIO, as pioasm assembles
+  it, and the CI checks with it that the chip select times and the clock period of the
+  data sheet (table 16-6) hold at the fastest SPI clock. A copy of the program with a
+  shorter chip select hold fails it.
+
 ## 1.2.0 - 2026-10-12
 
 Robustness of the driver: it no longer hangs when the PIO does not run, shares the PIO

@@ -31,9 +31,9 @@ Janyst, whose PIO program for SPI and ENC28J60 driver in C it is built on; see
    middle of a transfer, a chip that is reset by a glitch of its supply and a cable
    that is unplugged and plugged back are noticed and dealt with.
  * **The silicon errata that matter** (issues 6, 12, 13 and 14 of the
-   [errata sheet](#references)) are worked around in the blocking driver, which is the
-   one the Arduino classes use; the asynchronous mode for FreeRTOS does not have them
-   all yet, see [docs/c-driver.md](docs/c-driver.md).
+   [errata sheet](#references)) are worked around, in the blocking driver that the
+   Arduino classes use and in the asynchronous mode for FreeRTOS (which does not send
+   a frame again after a late collision; see [docs/c-driver.md](docs/c-driver.md)).
  * **Checked on real hardware** by a test bench that is part of the repository, and
    compiled by the CI for the Pico, Pico W, Pico 2 and Pico 2 W with the oldest and
    the newest supported cores. See [Testing](#testing).
@@ -322,7 +322,8 @@ What it does not do:
  * **Tested on** a Raspberry Pi Pico (RP2040) with an ENC28J60 revision B7 and the
    arduino-pico core 6.3.0. The sketches also compile for the Pico W, Pico 2 and
    Pico 2 W, but have not been run on them. The FreeRTOS+TCP driver is the one of the
-   original project, and was not built or run here.
+   original project, and was not built or run here; the asynchronous functions of the
+   C driver that it uses were run on the bench through `BenchTest`.
  * The receive buffer of the chip is small (4 KB, 6.5 KB at most with
    `rx_buffer_size = 0x1A00`; the transmit side only needs one frame), and a full-size
    frame can arrive every 1.2 ms, while at the default clock reading one takes 1.3 ms.
@@ -358,7 +359,7 @@ board and your LAN, driven by Python scripts on the PC:
 
 | Script | Sketch | What it checks |
 |--------|--------|----------------|
-| `bench.py` | `BenchTest` | the raw class: ping, receive and echo streams, transmit streams, a long soak, a receiver overload, the SPI clock from 1 to 20 MHz, configuration errors, a PIO that does not run, a chip that is reset, the MAC address, the functions that only look and `discardFrame()`, the link flag, the interrupt callback, and the INT pin |
+| `bench.py` | `BenchTest` | the raw class: ping, receive and echo streams, transmit streams, a long soak, a receiver overload, the SPI clock from 1 to 20 MHz, configuration errors, a PIO that does not run, a chip that is reset, the MAC address, the functions that only look and `discardFrame()`, the link flag, the interrupt callback, the INT pin, and the asynchronous functions of the C driver that the FreeRTOS driver uses |
 | `benchlwip.py` | `BenchLwip` | the lwIP interface: DHCP, ping both ways, TCP and UDP servers and clients, bulk transfers through several connections, a cable that is pulled out, a chip that is reset, a static address, repeated `end()` and `begin()` |
 | `webtest.py` | `WebServerLedToggle` | the web example: sequential and parallel requests, 100 toggles, a soak |
 

@@ -90,8 +90,8 @@ data is passed to both functions when they are called.
    configuration that makes no sense, a state machine that is taken, no room in the PIO,
    no ENC28J60 answering, no memory, a PIO that does not run.
  * `enc28j60_deinit()` stops the chip and gives the state machine, the PIO program (when it
-   is the last user) and the memory back. The DMA channels and the interrupt handler of the
-   asynchronous mode, which only exist when `notify` callbacks were given, are not released.
+   is the last user) and the memory back, and in the asynchronous mode the DMA channels and
+   the DMA interrupt handler (on the core that called the init).
  * Blocking transfers (the functions that end in `_blk`) give up when the state machine
    makes no progress for some 8 ms, instead of waiting for ever: `enc28j60_io_failed()`
    says that this happened, and `enc28j60_recover()` starts the state machine and the chip
@@ -103,13 +103,42 @@ data is passed to both functions when they are called.
    the transmit status vector of the last frame.
  * `enc28j60_set_mac_blk()`, `enc28j60_rx_reset_blk()`, `enc28j60_irq_status_blk()` and
    `enc28j60_irq_enable_blk()`.
+ * `enc28j60_irq_is_tx_err()` and the status `ENC28J60_ERR_DMA`, for the asynchronous
+   functions below.
 
-The asynchronous functions (the ones without `_blk`, which the FreeRTOS driver uses) do
-not have the silicon errata fixes of the blocking ones yet: the transmit logic is not reset
-before a frame (issue 12) and `ERXRDPT` is not kept odd (issue 14). They are compiled by the
-CI, with the Pico SDK, but have not been run in this fork, and the FreeRTOS+TCP driver is not
-even built here. Everything this fork was tested with is the blocking API, through the
-Arduino classes.
+### The asynchronous functions
+
+The functions without `_blk`, which the FreeRTOS driver uses, run their commands through
+DMA and wait for them with the `notify` callbacks. They follow the same silicon errata as
+the blocking ones:
+
+ * `ERXRDPT` is always odd after a frame was read or dropped (issue 14). They used to write
+   the next packet pointer there as it is, which the hardware always makes even.
+ * `enc28j60_frame_tx()` resets the transmit logic before every frame (issue 12) and
+   withdraws a request that an abort left pending. It also stops a transmission still
+   going on, so call it once the previous one has ended.
+ * `enc28j60_irq_is_tx()` counts a frame as ended when the MAC sent it (TXIF) or gave up
+   on it (TXERIF): after a late collision the chip may raise TXERIF alone (issue 13), and a
+   driver that waits for TXIF waits for ever. When an interrupt callback is given, TXERIF
+   drives the INT pin as well. `enc28j60_irq_is_tx_err()` tells an abort apart. A frame
+   lost to a late collision is not sent again in this mode, as `enc28j60_frame_send_blk()`
+   does; `enc28j60_tx_status_blk()` says whether that was the cause.
+ * `enc28j60_irq_flags()` takes PKTIF from the packet counter (issue 6).
+
+A call returns when the last of its commands has gone out. `enc28j60_frame_rx()` used to
+return as soon as the frame was read, while the commands that move the read pointers and
+decrement the packet counter were still being sent, and a call made right then restarted
+the DMA under them. `enc28j60_deinit()` gives back the DMA channels, the interrupt handler
+and the memory of this mode, and `enc28j60_init_status()` returns `ENC28J60_ERR_DMA`
+instead of stopping the program when fewer than three DMA channels are free. `dma_irq` is
+0 or 1.
+
+What was run: the bench sketch (`extras/bench/BenchTest`) has an asynchronous mode that
+does what the interrupt branch of the FreeRTOS driver does, with callbacks that spin
+instead of a FreeRTOS task, and `bench.py` checks it with traffic (see the
+[bench README](../extras/bench/README.md)). The FreeRTOS+TCP driver itself is still not
+built or run here. Unlike the blocking functions, the asynchronous ones have no time
+limit: if the state machine stops, `notify` never comes and `wait` never returns.
 
 ## FreeRTOS setup
 
@@ -128,6 +157,10 @@ and configuring the FreeRTOS-Pico sync interop in your FreeRTOSConfig.h:
 ```c
 #define configSUPPORT_PICO_SYNC_INTEROP 1
 ```
+
+The driver releases every network buffer it is given once the frame is in the chip, so
+it needs `ipconfigZERO_COPY_TX_DRIVER` set to 1 in FreeRTOSIPConfig.h, where the stack
+always hands the buffer over.
 
 The FreeRTOS driver is normally initialized the following way assuming that most of the
 driver configuration options are left at their defaults:
