@@ -14,6 +14,11 @@ With --irq the board is built to be driven by the chip's INT pin: the main loop
 talks to the chip only when the pin asks for it. All the tests above then run on
 top of that, and three more (irqidle, irqedge, irqlink) check the interrupt itself.
 
+Besides the traffic, the tests check what the driver does when things go wrong: a
+begin() with no chip, with settings that make no sense and with no room in the PIO,
+other users of the PIO, a state machine that stops, begin() after end(), and the
+status of a transmitted frame.
+
 Needs pyserial, arduino-cli (only with --flash) and a free IPv4 address on the
 LAN for the board. No root required.
 """
@@ -38,8 +43,8 @@ SKETCH = os.path.join(REPO, "extras", "bench", "BenchTest")
 PICO_MAC = "02:50:49:43:4f:01"
 PORT_RX, PORT_ECHO, PORT_TX, PEER_PORT = 9999, 9997, 9998, 9998
 SIZES = [10, 18, 100, 400, 800, 1200, 1472]  # UDP payload sizes
-ALL_TESTS = ["init", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong", "txbburst",
-             "soak", "rxflood"]
+ALL_TESTS = ["init", "cfgerr", "pioful", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong",
+             "txbburst", "soak", "rxflood", "txstat", "pioshare", "stall", "lifecycle"]
 IRQ_TESTS = ["irqidle", "irqedge", "irqlink"]  # only with --irq
 results = []
 
@@ -179,9 +184,10 @@ def t_init(p, link_timeout=20):
     rev = num(d, "rev")
     record("init", num(d, "init") == 1 and rev in (2, 4, 5, 6),
            "initialised=%s revision=0x%02X mac=%s irq pin=%s" % (d["init"], rev, d["mac"], d.get("irqpin", "?")))
-    record("errpath", num(d, "probe_ok") == 0 and num(d, "probe_ms") < 500 and num(d, "init") == 1,
-           "begin() with the CS pin on an unconnected GPIO %s after %s ms; the real begin() right after worked"
-           % ("failed" if num(d, "probe_ok") == 0 else "SUCCEEDED (wrong)", d["probe_ms"]))
+    record("errpath", num(d, "probe_ok") == 0 and d.get("probe_err") == "nochip" and num(d, "probe_ms") < 500 and
+           num(d, "init") == 1,
+           "begin() with the CS pin on an unconnected GPIO %s (%s) after %s ms; the real begin() right after worked"
+           % ("failed" if num(d, "probe_ok") == 0 else "SUCCEEDED (wrong)", d.get("probe_err"), d["probe_ms"]))
     deadline = time.time() + link_timeout
     link = 0
     while time.time() < deadline:
@@ -385,6 +391,87 @@ def t_tx(p, host_ip, pico_ip, name, count, plen, gap_us):
            "duplicates=%d corrupted=%d" % (sent, fail, plen, gap_us, got, count, dup, corrupt))
 
 
+def t_cfgerr(p):
+    """Settings that make no sense are refused at once, as such, without the pins being touched."""
+    d = kv(p.cmd("INFO", "INFO"))
+    tried, rejected = num(d, "cfg_tried"), num(d, "cfg_rejected")
+    record("cfgerr", tried >= 7 and rejected == tried and num(d, "cfg_us") < 5000,
+           "%d of %d invalid configurations refused with 'config', the slowest in %s us" % (rejected, tried, d["cfg_us"]))
+
+
+def t_pioful(p):
+    """With no room in any PIO, begin() says so, quickly, and the real begin() afterwards still works."""
+    d = kv(p.cmd("INFO", "INFO"))
+    record("pioful", num(d, "pioful_filled") == 1 and num(d, "pioful_ok") == 0 and d.get("pioful_err") == "piospace" and
+           num(d, "pioful_ms") < 100 and num(d, "init") == 1,
+           "instruction memory of every PIO full: begin() failed with '%s' after %s ms; the real begin() right after "
+           "worked (pio%s sm%s, claimed=%s)" % (d.get("pioful_err"), d["pioful_ms"], d["pio"], d["sm"], d["claimed"]))
+
+
+def ping_replies(ip, count=5):
+    r = subprocess.run(["ping", "-c", str(count), "-i", "0.2", "-W", "1", ip], capture_output=True, text=True)
+    m = re.search(r"(\d+) packets transmitted, (\d+) received", r.stdout)
+    return int(m.group(2)) if m else 0
+
+
+def wait_link(p, timeout=25):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if num(kv(p.cmd("INFO", "INFO")), "link"):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def t_txstat(p):
+    """The transmit status vector of frames sent on purpose: sizes, flags and no errors."""
+    ok, notes = True, []
+    # (frame length, broadcast, bytes the MAC reports: the frame padded to 60 bytes, plus the 4-byte CRC)
+    for length, bcast, expect in ((60, 1, 64), (100, 1, 104), (100, 0, 104), (1514, 1, 1518), (40, 0, 64), (22, 1, 64)):
+        t = kv(p.cmd("TSV %d %d" % (length, bcast), "TSV"))
+        good = (t.get("status") == "0" and num(t, "retries") == 0 and num(t, "bytes") == expect and num(t, "wire") == expect
+                and num(t, "done") == 1 and num(t, "bcast") == bcast and num(t, "mcast") == bcast and num(t, "late") == 0
+                and num(t, "xcoll") == 0 and num(t, "underrun") == 0)
+        ok = ok and good
+        notes.append("%d%s->%s%s" % (length, "b" if bcast else "u", t.get("bytes"), "" if good else " WRONG(%s)" % t.get("raw")))
+    record("txstat", ok, "status vectors, frame length -> bytes on the wire (b broadcast, u unicast): %s" % ", ".join(notes))
+
+
+def t_pioshare(p, ip):
+    """Other users of the PIO fill all the other state machines; the one of the driver has to stay with it."""
+    t = kv(p.cmd("PIOSHARE", "PIOSHARE", 20))
+    replies = ping_replies(ip)
+    record("pioshare", num(t, "started") >= 5 and num(t, "claimed") == 1 and num(t, "rev") == 6 and num(t, "after") == 6 and
+           num(t, "io") == 0 and replies == 5,
+           "%s other PIO users started; the state machine of the driver stayed claimed; revision read with them "
+           "running 0x%02X, after 0x%02X; I/O errors %s; ping %d/5" %
+           (t["started"], num(t, "rev"), num(t, "after"), t["io"], replies))
+
+
+def t_stall(p, ip):
+    """The state machine of the driver is stopped: the call that finds out must return, and the driver must come back."""
+    t = kv(p.cmd("STALL", "STALLDONE", 20))
+    link = wait_link(p)
+    replies = ping_replies(ip) if link else 0
+    record("stall", num(t, "first_us") < 100000 and num(t, "first") == 0xFF and num(t, "second") == 6 and num(t, "io") == 1 and
+           num(t, "rec") == 1 and link and replies == 5,
+           "state machine stopped: the first call came back after %.1f ms with the failure value, the next one "
+           "brought the chip back in %s ms (io errors %s, recoveries %s); link %s, ping %d/5" %
+           (num(t, "first_us") / 1000, t["second_ms"], t["io"], t["rec"], "up" if link else "DOWN", replies))
+
+
+def t_lifecycle(p, ip):
+    """end() and begin() again: every end() gives the state machine back, and the chip works after the last begin()."""
+    t = kv(p.cmd("LIFECYCLE", "LIFECYCLE", 30))
+    link = wait_link(p)
+    replies = ping_replies(ip) if link else 0
+    record("lifecycle", num(t, "freed") == 1 and num(t, "began") == 1 and num(t, "rev") == 6 and num(t, "claimed") == 1 and
+           link and replies == 5,
+           "%s x end()+begin(): the state machine was given back each time (%s), began %s; link %s, ping %d/5" %
+           (t["cycles"], "yes" if num(t, "freed") else "NO", "ok" if num(t, "began") else "FAILED",
+            "up" if link else "DOWN", replies))
+
+
 def int_level(p, samples=5):
     """The level of the INT pin as the board sees it, sampled a few times over 0.2 s; 1 = idle."""
     levels = []
@@ -482,6 +569,10 @@ def main():
     link = t_init(p) if "init" in wanted else True
     if link:
         p.cmd("IP " + args.ip, "OK")
+        if "cfgerr" in wanted:
+            t_cfgerr(p)
+        if "pioful" in wanted:
+            t_pioful(p)
         if "ping" in wanted:
             t_ping(p, args.ip)
         if "rx" in wanted:
@@ -504,6 +595,14 @@ def main():
             t_txb(p, host_ip, "txblong", 400, 300, 3000)
         if "txbburst" in wanted:
             t_txb(p, host_ip, "txbburst", 200, 100, 0)
+        if "txstat" in wanted:
+            t_txstat(p)
+        if "pioshare" in wanted:
+            t_pioshare(p, args.ip)
+        if "stall" in wanted:
+            t_stall(p, args.ip)
+        if "lifecycle" in wanted:
+            t_lifecycle(p, args.ip)
         if args.irq is not None:
             if "irqidle" in wanted:
                 t_irqidle(p)
