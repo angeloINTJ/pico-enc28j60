@@ -31,7 +31,9 @@ Janyst, whose PIO program for SPI and ENC28J60 driver in C it is built on; see
    middle of a transfer, a chip that is reset by a glitch of its supply and a cable
    that is unplugged and plugged back are noticed and dealt with.
  * **The silicon errata that matter** (issues 6, 12, 13 and 14 of the
-   [errata sheet](#references)) are worked around.
+   [errata sheet](#references)) are worked around in the blocking driver, which is the
+   one the Arduino classes use; the asynchronous mode for FreeRTOS does not have them
+   all yet, see [docs/c-driver.md](docs/c-driver.md).
  * **Checked on real hardware** by a test bench that is part of the repository, and
    compiled by the CI for the Pico, Pico W, Pico 2 and Pico 2 W with the oldest and
    the newest supported cores. See [Testing](#testing).
