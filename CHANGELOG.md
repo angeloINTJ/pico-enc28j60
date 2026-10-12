@@ -113,6 +113,9 @@ give a frame bytes of the one being sent.
 * Built with `-DENC28J60_PROFILE`, the blocking functions of the C driver count their
   SPI commands and the microseconds they take (`enc28j60_profile_read()` in
   `src/enc28j60-cmd.h`). Without the define the code is the same as before.
+* `cost` in `bench.py --flash --profile`, a suite of its own in `gate.sh`, fails when
+  receiving, uploading or starting a frame takes more SPI commands than the code needs;
+  `txfull` times 200 full-size frames through `sendFrame()`.
 
 ### Changed
 

@@ -23,6 +23,11 @@
  * -DBENCH_SPI_HZ=n sets the SPI clock of the chip to n Hz instead of the default of the
  * library (bench.py --spi-hz n does that), to run every test at another clock.
  *
+ * -DENC28J60_PROFILE (bench.py --flash --profile does that, in the C flags and in the C++ flags) makes the C driver
+ * count the commands of the SPI that it runs, and the microseconds they take (src/enc28j60-cmd.h). COST reports them for
+ * the hot paths of the driver. A build without the define, which is what --flash alone makes and the build that users
+ * get, answers COSTERR noprofile.
+ *
  * Before the chip is initialized for real, setup() checks that begin() fails,
  * fast and for the right reason, with no chip behind the pins, with settings
  * that make no sense and with no room left in the PIO. The commands PIOSHARE,
@@ -747,6 +752,8 @@ static void printStats()
 // TX  <count> <payload length> <gap in microseconds>: unicast stream to the last echo peer.
 // TXB <count> <payload length> <gap in microseconds>: broadcast stream to 255.255.255.255:PORT_TX.
 // In the asynchronous mode both send through the C driver, waiting for the upload slot (asyncSendWait()).
+// TXDONE gives the frames that went out and the ones that did not, and in us= the time of the whole stream, from before the
+// first frame is made to after the last one is sent: the making of the frames and the gaps are in it.
 static void cmdTx(bool broadcast, uint32_t count, uint16_t plen, uint32_t gapUs)
 {
     static const uint8_t bcMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -758,6 +765,7 @@ static void cmdTx(bool broadcast, uint32_t count, uint16_t plen, uint32_t gapUs)
     if (plen < HDR_LEN) plen = HDR_LEN;
     if (plen > 1472) plen = 1472;
     uint32_t ok = 0, fail = 0;
+    uint32_t t0 = micros();
     for (uint32_t s = 0; s < count; s++) {
         uint8_t* p = txbuf + 42;
         memcpy(p, "PBNC", 4);
@@ -771,11 +779,12 @@ static void cmdTx(bool broadcast, uint32_t count, uint16_t plen, uint32_t gapUs)
         else fail++;
         if (gapUs) delayMicroseconds(gapUs);
     }
+    uint32_t us = micros() - t0;
     if (!ah) {  // asyncSend() has counted its frames by itself
         st.tx += ok;
         st.txf += fail;
     }
-    Serial.printf("TXDONE sent=%lu fail=%lu\n", (unsigned long)ok, (unsigned long)fail);
+    Serial.printf("TXDONE sent=%lu fail=%lu us=%lu\n", (unsigned long)ok, (unsigned long)fail, (unsigned long)us);
 }
 
 // TXMIX <receive buffer size> <count>: begin() again with that receive buffer, which leaves the rest of the RAM of
@@ -1170,6 +1179,77 @@ static void cmdTsv(uint16_t len, bool broadcast)
                   v[4] | (v[5] << 8), v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
 }
 
+// COST <frame length>: what the hot paths of the driver cost in commands of the SPI and in microseconds, from the counters
+// that the C driver keeps when it is built with -DENC28J60_PROFILE (src/enc28j60-cmd.h). Every step zeroes the counters,
+// makes its call and reads them, so a step holds only what that call did:
+//   avail  available() with the receive buffer empty: the frames that wait are dropped first, and it is asked again at
+//          once if one came in meanwhile (empty=1 says that the answer was 0)
+//   rx     receiveFrame() of the next frame. The board says COSTARM and bench.py sends the frame; rxlen is the length
+//          that receiveFrame() returned, which is the frame without its FCS
+//   up     enc28j60_frame_upload_blk() of a frame of <frame length> bytes (uplen), as sendFrame() does it
+//   start  enc28j60_frame_tx_blk(), as sendFrame() does it
+//   wait   enc28j60_frame_tx_wait_blk(): eir reads of EIR, as many as the wire takes, then one command that clears
+//          TXRTS, so wait is eir + 1 when the frame was sent (sent=1); wait_us is the time of the loop of the reads
+// The times are those of the commands (the counters of the driver), not of the calls, so the Arduino class around them
+// is not in them. The frame that goes out is a broadcast with the EtherType 0x88B5, like the one of TSV.
+static void cmdCost(uint16_t len)
+{
+#ifdef ENC28J60_PROFILE
+    static const uint8_t bcMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    if (len < 24) len = 24;  // the header and the marker
+    if (len > PicoENC28J60::MAX_FRAME_SIZE) len = PicoENC28J60::MAX_FRAME_SIZE;
+    enc28j60* h = driverHandle();
+    enc28j60_profile availC, rxC, upC, startC, waitC;
+
+    // An empty buffer. A frame of the LAN can come in between the last one dropped and the question: ask again
+    uint8_t left = 1;
+    for (int tries = 0; tries < 8 && left; tries++) {
+        for (int n = 0; n < 200 && eth.available(); n++) eth.discardFrame();
+        enc28j60_profile_reset();
+        left = eth.available();
+        enc28j60_profile_read(&availC);
+    }
+
+    // The frame to take: bench.py sends it when it reads COSTARM
+    Serial.println("COSTARM");
+    for (uint32_t t0 = millis(); !eth.available() && millis() - t0 < 3000;) delay(1);
+    enc28j60_profile_reset();
+    uint16_t rxlen = eth.receiveFrame(rxbuf, sizeof(rxbuf));
+    enc28j60_profile_read(&rxC);
+
+    // The frame to send: nothing on the LAN answers the EtherType 0x88B5
+    memset(txbuf, 0, len);
+    memcpy(txbuf, bcMac, 6);
+    memcpy(txbuf + 6, MAC, 6);
+    wr16(txbuf + 12, 0x88B5);
+    memcpy(txbuf + 14, "PBNC-COST", 9);
+    enc28j60_profile_reset();
+    uint32_t id = enc28j60_frame_upload_blk(h, len, txbuf);
+    enc28j60_profile_read(&upC);
+    if (id == ENC28J60_INVALID_FRAME_ID) {
+        Serial.println("COSTERR upload");
+        return;
+    }
+    enc28j60_profile_reset();
+    enc28j60_frame_tx_blk(h, id);
+    enc28j60_profile_read(&startC);
+    enc28j60_profile_reset();
+    bool sent = enc28j60_frame_tx_wait_blk(h, id, 20000);
+    enc28j60_profile_read(&waitC);
+
+    Serial.printf("COST avail=%lu rx=%lu rxlen=%u up=%lu uplen=%u start=%lu eir=%lu wait=%lu empty=%d sent=%d spihz=%lu "
+                  "avail_us=%lu rx_us=%lu up_us=%lu start_us=%lu wait_us=%lu\n",
+                  (unsigned long)availC.commands, (unsigned long)rxC.commands, rxlen, (unsigned long)upC.commands, len,
+                  (unsigned long)startC.commands, (unsigned long)waitC.wait_reads, (unsigned long)waitC.commands,
+                  left == 0, sent, (unsigned long)h->cfg->spi_hz, (unsigned long)availC.command_us,
+                  (unsigned long)rxC.command_us, (unsigned long)upC.command_us, (unsigned long)startC.command_us,
+                  (unsigned long)waitC.wait_us);
+#else
+    (void)len;
+    Serial.println("COSTERR noprofile");
+#endif
+}
+
 // ASYNC 1: hand the chip to the C driver in its asynchronous mode, in place of the class. ASYNC 0 gives it back.
 static void cmdAsyncOn()
 {
@@ -1349,6 +1429,8 @@ static void handleCommand(char* line)
         cmdTxRing((uint16_t)a, n, g);
     } else if (sscanf(line, "TSV %u %u", &a, &b) == 2) {
         cmdTsv((uint16_t)a, b != 0);
+    } else if (sscanf(line, "COST %u", &a) == 1) {
+        cmdCost((uint16_t)a);
     } else if (sscanf(line, "TXB %lu %u %lu", &n, &a, &g) == 3) {
         cmdTx(true, n, (uint16_t)a, g);
     } else if (sscanf(line, "TX %lu %u %lu", &n, &a, &g) == 3) {

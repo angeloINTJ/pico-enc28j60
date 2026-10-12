@@ -9,6 +9,7 @@ ENC28J60 that is cabled to the same LAN as this PC. It generates real traffic
 
     python3 extras/bench/bench.py --ip 192.168.3.77 --flash
     python3 extras/bench/bench.py --ip 192.168.3.77 --flash --irq 6    # INT wired to GP6
+    python3 extras/bench/bench.py --ip 192.168.3.77 --flash --profile  # the build with the counters; adds cost
 
 With --irq the board is built to be driven by the chip's INT pin: the main loop
 talks to the chip only when the pin asks for it. All the tests above then run on
@@ -20,6 +21,13 @@ other users of the PIO, a state machine that stops, begin() after end(), and the
 status of a transmitted frame. Others go through the rest of the public API: the
 functions that only look and discardFrame() on frames that wait in the buffer,
 hasLinkChange(), setMACAddress() and the interrupt callback.
+
+Two tests measure the driver instead of checking a behavior. txfull sends 200 full-size frames back to back and reports
+the frames and the kB a second that the driver reaches. cost counts the commands of the SPI that available(),
+receiveFrame(), an upload and the start of a transmission take, and fails if one takes more than the code needs. The C
+driver counts only when it is compiled with -DENC28J60_PROFILE, which is not the build that users get: --flash alone
+builds BenchTest as before, --flash --profile builds it with the counters, and cost runs only with --profile, the way the
+interrupt tests run only with --irq.
 
 The C driver also has asynchronous functions (DMA with notification callbacks) that only the FreeRTOS+TCP driver
 uses. Seven more tests go through them: the board hands the chip over (its ASYNC command) and serves it the way that
@@ -55,13 +63,14 @@ PICO_MAC = "02:50:49:43:4f:01"
 PORT_RX, PORT_ECHO, PORT_TX, PEER_PORT = 9999, 9997, 9998, 9998
 SIZES = [10, 18, 100, 400, 800, 1200, 1472]  # UDP payload sizes
 ALL_TESTS = ["init", "cfgerr", "pioful", "spi", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong",
-             "txbburst", "soak", "rxflood", "rxoverflow", "discard", "callback", "linkflag", "setmac", "txstat",
-             "pioshare", "stall", "lifecycle", "txmix", "txring", "lostchip", "asyncrx", "asyncdiscard", "asyncfast",
-             "asyncecho", "asynctx", "asyncflood", "asynccycle"]
+             "txbburst", "txfull", "soak", "rxflood", "rxoverflow", "discard", "callback", "linkflag", "setmac",
+             "txstat", "pioshare", "stall", "lifecycle", "txmix", "txring", "lostchip", "asyncrx", "asyncdiscard",
+             "asyncfast", "asyncecho", "asynctx", "asyncflood", "asynccycle"]
 ASYNC_TESTS = ["asyncrx", "asyncdiscard", "asyncfast", "asyncecho", "asynctx", "asyncflood"]  # one ASYNC session
 DEFAULT_SPI_HZ = 10000000  # ENC28J60Config::spi_hz
 SPI_SPEEDS = [1000000, 3500000, 8000000, 10000000, 12500000, 16000000, 20000000]  # Hz, for the spi test
 IRQ_TESTS = ["irqidle", "irqedge", "irqlink"]  # only with --irq
+PROFILE_TESTS = ["cost"]  # only with --profile: they read the counters of a driver built with -DENC28J60_PROFILE
 results = []
 
 
@@ -166,12 +175,18 @@ def find_port(explicit):
     return cands[0]
 
 
-def flash(port, fqbn, irq_pin=None, sketch=SKETCH, spi_hz=None):
-    """Compile a bench sketch against this checkout and upload it."""
-    variant = ("irq%d" % irq_pin if irq_pin is not None else "poll") + ("-%dhz" % spi_hz if spi_hz else "")
+def flash(port, fqbn, irq_pin=None, sketch=SKETCH, spi_hz=None, profile=False):
+    """Compile a bench sketch against this checkout and upload it. With profile the C driver and the sketch are built with
+    -DENC28J60_PROFILE, so that the driver counts its commands and BenchTest can report them (COST)."""
+    variant = (("irq%d" % irq_pin if irq_pin is not None else "poll") + ("-%dhz" % spi_hz if spi_hz else "") +
+               ("-prof" if profile else ""))
     build = os.path.join(tempfile.gettempdir(), "picoenc-%s-build-%s" % (os.path.basename(sketch), variant))
     cmd = ["arduino-cli", "compile", "--fqbn", fqbn, "--library", REPO, "--build-path", build]
     defines = []
+    if profile:
+        # The driver is C and the sketch is C++: the define has to reach both
+        defines.append("-DENC28J60_PROFILE")
+        cmd += ["--build-property", "compiler.c.extra_flags=-DENC28J60_PROFILE"]
     if irq_pin is not None:
         defines.append("-DBENCH_IRQ_PIN=%d" % irq_pin)
     if spi_hz:
@@ -441,8 +456,9 @@ def run_tx(p, host_ip, pico_ip, count, plen, gap_us):
     return len(got), dup, corrupt, num(done, "sent"), num(done, "fail")
 
 
-def run_txb(p, host_ip, count, plen, gap_us):
-    """Have the board broadcast `count` frames; needs no RX path on the board."""
+def run_txb(p, host_ip, count, plen, gap_us, done=None):
+    """Have the board broadcast `count` frames; needs no RX path on the board. `done`, if given, is filled with the
+    fields of the TXDONE line (sent, fail and us, the time of the whole stream)."""
     p.cmd("RESET", "OK")
     sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sk.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -463,8 +479,10 @@ def run_txb(p, host_ip, count, plen, gap_us):
         else:
             got.add(seq)
     sk.close()
-    done = kv(p.expect("TXDONE", 10))
-    return len(got), dup, corrupt, num(done, "sent"), num(done, "fail")
+    line = kv(p.expect("TXDONE", 10))
+    if done is not None:
+        done.update(line)
+    return len(got), dup, corrupt, num(line, "sent"), num(line, "fail")
 
 
 def t_txb(p, host_ip, name, count, plen, gap_us):
@@ -472,6 +490,25 @@ def t_txb(p, host_ip, name, count, plen, gap_us):
     record(name, got == count and dup == 0 and corrupt == 0 and fail == 0,
            "board sendFrame ok=%d failed=%d (%d B payload, %d us gap, broadcast); host received %d/%d, "
            "duplicates=%d corrupted=%d" % (sent, fail, plen, gap_us, got, count, dup, corrupt))
+
+
+def t_txfull(p, host_ip, count=200, plen=1472):
+    """The longest frames that the stream can carry, one after the other with no gap: every one has to arrive intact. The
+    time of the whole stream, which the board reports in TXDONE (us=), is the speed: frames, and kB of UDP payload, a
+    second. It is reported, not judged: it depends on the SPI clock of the build."""
+    done = {}
+    got, dup, corrupt, sent, fail = run_txb(p, host_ip, count, plen, 0, done)
+    us = int(done.get("us", 0))
+    if us <= 0:
+        record("txfull", False, "TXDONE has no us= (a BenchTest from before the timing: use --flash); sent=%s fail=%s" %
+               (done.get("sent"), done.get("fail")))
+        return
+    seconds = us / 1e6
+    record("txfull", got == count and dup == 0 and corrupt == 0 and fail == 0,
+           "board sendFrame ok=%d failed=%d (%d B payload, no gap, broadcast) in %.1f ms: %.0f frames/s, %.0f kB/s of UDP "
+           "payload (1 kB = 1000 bytes), %.0f us a frame; host received %d/%d, duplicates=%d corrupted=%d" %
+           (sent, fail, plen, us / 1000.0, sent / seconds, sent * plen / seconds / 1000.0, us / max(sent, 1), got, count,
+            dup, corrupt))
 
 
 def t_tx(p, host_ip, pico_ip, name, count, plen, gap_us):
@@ -672,6 +709,113 @@ def t_txstat(p):
         ok = ok and good
         notes.append("%d%s->%s%s" % (length, "b" if bcast else "u", t.get("bytes"), "" if good else " WRONG(%s)" % t.get("raw")))
     record("txstat", ok, "status vectors, frame length -> bytes on the wire (b broadcast, u unicast): %s" % ", ".join(notes))
+
+
+def ceil_div(a, b):
+    return -(-a // b)
+
+
+# The most commands that each step of COST may take, worked out by reading the code (src/PicoENC28J60.cpp,
+# src/enc28j60-driver.c, src/enc28j60-cmd.h). Every register or buffer helper that ends in enc28j60_execute_blocking()
+# is one command, except bank_set_blk() (clear BSEL1:BSEL0 in ECON1, then set the bank) and reg_write16_blk() (the low
+# byte, then the high one), which are two:
+#   available() = enc28j60_rx_count_blk() = bank_set_blk(1) 2 + read EPKTCNT 1                                  = 3
+#   receiveFrame() of a frame of rx_len bytes, which is what it returns:
+#       _readRxInfo(): the packet count again 3 + the 6 bytes of header, one RBM 1                               = 4
+#       enc28j60_frame_rx_blk(): the data in reads of RBM_MAX = 31 bytes at most                  ceil(rx_len / 31)
+#           bank_set_blk(0) 2 + ERXRDPT 2 + ERDPT 2 + ECON2.PKTDEC 1                                             = 7
+#       = 11 + ceil(rx_len / 31). The S of this formula is rx_len, not the byte count in the header of the chip: that
+#       one includes the 4 bytes of the FCS, and receiveFrame() rewrites it as size - 4 before enc28j60_frame_rx_blk()
+#       reads, so the reads are ceil((S_header - 4) / 31). For a frame of 62 bytes (66 in the header) they are 2, not 3.
+#   enc28j60_frame_upload_blk() of up_len bytes: bank_set_blk(0) 2 + EWRPT 2 + the control byte, one WBM 1     = 5
+#       then the frame in writes of WBM_MAX = 30 bytes at most                                    ceil(up_len / 30)
+#       = 5 + ceil(up_len / 30)
+#   enc28j60_frame_tx_blk(): bank_set_blk(0) 2 + set TXRST 1 + clear TXRST 1 + clear TXIF and TXERIF 1 + ETXST 2
+#       + ETXND 2 + set TXRTS 1                                                                              = 10
+# The wait after the start is not in the budget: it reads EIR until the frame is out, as many times as the wire takes,
+# and clears TXRTS once, so its commands are eir + 1, which cost_problems() compares with the reads the driver counted.
+def cost_budget(rx_len, up_len):
+    return {"avail": 3, "rx": 11 + ceil_div(rx_len, 31), "up": 5 + ceil_div(up_len, 30), "start": 10}
+
+
+def cost_over(d):
+    """The steps of a COST line (as a dict) that took more commands than cost_budget() allows: (step, taken, allowed)."""
+    budget = cost_budget(num(d, "rxlen"), num(d, "uplen"))
+    return [(step, num(d, step), allowed) for step, allowed in budget.items() if num(d, step) > allowed]
+
+
+def cost_problems(d):
+    """What is wrong with a COST line, as sentences: a step over its budget, or a measurement not made as meant."""
+    problems = ["%s took %d commands, the code needs %d" % over for over in cost_over(d)]
+    if num(d, "rxlen") == 0:
+        problems.append("no frame came in for receiveFrame()")
+    if num(d, "empty") != 1:
+        problems.append("the receive buffer was not empty for available()")
+    if num(d, "sent") != 1:
+        problems.append("the frame of the upload was not sent")
+    if num(d, "eir") < 1 or num(d, "wait") != num(d, "eir") + 1:
+        problems.append("the wait took %d commands for %d reads of EIR: it should be one more than the reads" %
+                        (num(d, "wait"), num(d, "eir")))
+    return problems
+
+
+def cost_run(p, sk, seq, payload_len):
+    """One COST. The board measures available() on an empty buffer and says COSTARM; the frame that it then takes is a
+    UDP broadcast from this PC with a payload of payload_len bytes, and the board uploads and sends one as long.
+    Returns the COST line, or the COSTERR line."""
+    p.s.reset_input_buffer()
+    p.rx = b""
+    p.send("COST %d" % (42 + payload_len))
+    line = p.expect(("COSTARM", "COSTERR"), 5)
+    if line.startswith("COSTARM"):
+        sk.sendto(make_payload(seq, payload_len), ("255.255.255.255", PORT_RX))
+        line = p.expect(("COST ", "COSTERR"), 10)
+    return line
+
+
+def t_cost(p, host_ip, payloads=(18, 20, 400, 1472)):
+    """The commands of the SPI that available() on an empty buffer, receiveFrame() of a frame, an upload and the start of
+    a transmission take: the C driver counts them (the board is built with -DENC28J60_PROFILE, which --flash --profile
+    does), and none may take more than cost_budget() says. The microseconds are reported, not judged."""
+    # The suite of the gate runs this test alone, right after the board was flashed: the frame for receiveFrame() can
+    # only come in once the link is up
+    if not wait_link(p):
+        record("cost", False, "no link 25 s after the start: the frame for receiveFrame() cannot come in")
+        return
+    sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sk.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sk.bind((host_ip, 0))
+    rows, problems = [], []
+    try:
+        for seq, plen in enumerate(payloads):
+            line = cost_run(p, sk, seq, plen)
+            if line.startswith("COSTERR"):
+                record("cost", False, "the board answered '%s'%s" % (
+                    line, " (build with --flash --profile)" if "noprofile" in line else ""))
+                return
+            d = kv(line)
+            rows.append(d)
+            problems += ["%d B payload: %s" % (plen, x) for x in cost_problems(d)]
+            info("cost", "%4d B in, %4d B out at %.1f MHz: available() %d commands, %d us; receiveFrame() %d, %d us; "
+                 "upload %d, %d us; start %d, %d us; wait %d reads of EIR, %d us" %
+                 (num(d, "rxlen"), num(d, "uplen"), num(d, "spihz") / 1e6, num(d, "avail"), num(d, "avail_us"),
+                  num(d, "rx"), num(d, "rx_us"), num(d, "up"), num(d, "up_us"), num(d, "start"), num(d, "start_us"),
+                  num(d, "eir"), num(d, "wait_us")))
+    finally:
+        sk.close()
+    budgets = [cost_budget(num(d, "rxlen"), num(d, "uplen")) for d in rows]
+    cheaper = sorted({step for d, b in zip(rows, budgets) for step in b if num(d, step) < b[step]})
+    if cheaper:
+        info("cost", "fewer commands than cost_budget() allows, in %s: lower the budget in the same change that made "
+             "the code cheaper" % ", ".join(cheaper))
+
+    def taken(step):
+        return ", ".join("%d/%d" % (num(d, step), b[step]) for d, b in zip(rows, budgets))
+
+    record("cost", not problems,
+           "commands taken/allowed: available() %s; receiveFrame() of %s bytes %s; upload of %s bytes %s; start %s%s" %
+           (taken("avail"), ", ".join(d["rxlen"] for d in rows), taken("rx"), ", ".join(d["uplen"] for d in rows),
+            taken("up"), taken("start"), "; PROBLEMS: " + "; ".join(problems) if problems else ""))
 
 
 def t_pioshare(p, ip):
@@ -1030,12 +1174,28 @@ def t_asynccycle(p, cycles=8):
             "yes" if num(d, "began") else "NO"))
 
 
+def selected_tests(tests, irq, profile):
+    """The names of the tests to run: those in --tests, or all of them, with the groups that need an option only when it is
+    given: the interrupt tests with --irq, and with --profile the tests that read the counters of the driver, which only a
+    BenchTest compiled with -DENC28J60_PROFILE has (not the build that users get)."""
+    if tests is None:
+        return ALL_TESTS + (IRQ_TESTS if irq is not None else []) + (PROFILE_TESTS if profile else [])
+    wanted = tests.split(",")
+    for name in PROFILE_TESTS:
+        if name in wanted and not profile:
+            sys.exit("bench.py: --tests %s needs --profile: the test reads counters that the driver keeps only in a build "
+                     "with -DENC28J60_PROFILE (--flash --profile makes it)" % name)
+    return wanted
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ip", required=True, help="free IPv4 address on the LAN for the board")
     ap.add_argument("--port", help="serial port (default: first /dev/serial/by-id/*Pico*)")
     ap.add_argument("--fqbn", default="rp2040:rp2040:rpipico")
     ap.add_argument("--flash", action="store_true", help="compile and upload BenchTest first")
+    ap.add_argument("--profile", action="store_true",
+                    help="with --flash, build BenchTest with -DENC28J60_PROFILE; adds the cost test, which needs that build")
     ap.add_argument("--irq", type=int, metavar="GPIO", help="the board is the interrupt build, INT wired to this GPIO")
     ap.add_argument("--spi-hz", type=int, metavar="HZ", help="with --flash, build with this SPI clock instead of the default")
     ap.add_argument("--alt-ip", help="a second free IPv4 address, for the setmac test (default: --ip plus two)")
@@ -1043,12 +1203,11 @@ def main():
                     help="the spi test fails if a clock up to this many MHz is not clean (default 10)")
     ap.add_argument("--tests", help="comma separated; default: all")
     args = ap.parse_args()
-    if args.tests is None:
-        args.tests = ",".join(ALL_TESTS + (IRQ_TESTS if args.irq is not None else []))
+    wanted = selected_tests(args.tests, args.irq, args.profile)
 
     port = find_port(args.port)
     if args.flash:
-        flash(port, args.fqbn, args.irq, spi_hz=args.spi_hz)
+        flash(port, args.fqbn, args.irq, spi_hz=args.spi_hz, profile=args.profile)
     host_ip = local_ip_for(args.ip)
     head, _, last = args.ip.rpartition(".")
     alt_ip = args.alt_ip or "%s.%d" % (head, int(last) + 2)
@@ -1056,7 +1215,6 @@ def main():
 
     p = Pico(port)
     p.cmd("ID", "READY", 5)
-    wanted = args.tests.split(",")
     link = t_init(p) if "init" in wanted else True
     if link:
         p.cmd("IP " + args.ip, "OK")
@@ -1098,6 +1256,10 @@ def main():
             t_txb(p, host_ip, "txblong", 400, 300, 3000)
         if "txbburst" in wanted:
             t_txb(p, host_ip, "txbburst", 200, 100, 0)
+        if "txfull" in wanted:
+            t_txfull(p, host_ip)
+        if "cost" in wanted:
+            guarded("cost", lambda: t_cost(p, host_ip))
         if "txstat" in wanted:
             t_txstat(p)
         if "pioshare" in wanted:

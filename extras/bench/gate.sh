@@ -23,9 +23,11 @@ Run the suites of extras/bench on a Pico with an ENC28J60, one after the other, 
 log, and write a summary of which passed. The suites compile and flash the checkout this script is
 in. The exit status is 0 only if every suite that ran passed.
 
-Suites, in this order: bench_poll and bench_irq (bench.py), lwip_poll and lwip_irq (benchlwip.py),
-web_poll and web_irq (webtest.py on examples/WebServerLedToggle). The _irq suites run with --irq,
-the web suites with --web-mac; the summary names the ones that did not run, and why.
+Suites, in this order: bench_poll, bench_cost and bench_irq (bench.py), lwip_poll and lwip_irq
+(benchlwip.py), web_poll and web_irq (webtest.py on examples/WebServerLedToggle). bench_cost runs
+only the cost test, in the build with the counters of the driver (bench.py --flash --profile),
+which is not the build that users get. The _irq suites run with --irq, the web suites with
+--web-mac; the summary names the ones that did not run, and why.
 
 Options:
   --ip ADDR        a free IPv4 address for the board in bench.py (required). ADDR plus 2 has to be
@@ -140,7 +142,7 @@ prefix=${ip%.*}
 mkdir -p "$out" || die "cannot create $out"
 summary=$out/summary.txt
 # Only what this script writes: --out may be a folder with other things in it
-rm -f "$summary" "$out"/{bench_poll,bench_irq,lwip_poll,lwip_irq,web_poll,web_irq}.txt
+rm -f "$summary" "$out"/{bench_poll,bench_cost,bench_irq,lwip_poll,lwip_irq,web_poll,web_irq}.txt
 sha=$(git -C "$repo" rev-parse --short HEAD 2> /dev/null || echo unknown)
 dirty=$(git -C "$repo" status --short 2> /dev/null | wc -l | tr -d ' ')
 
@@ -222,6 +224,12 @@ for kind in bench lwip web; do
             bench)
                 suite "$name" python3 "$repo/extras/bench/bench.py" --ip "$ip" --flash --port "$port" --fqbn "$fqbn" \
                     ${extra[@]+"${extra[@]}"} ${bench_spi[@]+"${bench_spi[@]}"}
+                # The counters of the driver are in a build made for them, which is not the build that users get: the
+                # cost test runs there and nowhere else, right after the polled suite
+                if [[ $variant == poll ]]; then
+                    suite bench_cost python3 "$repo/extras/bench/bench.py" --ip "$ip" --flash --profile --tests cost \
+                        --port "$port" --fqbn "$fqbn" ${bench_spi[@]+"${bench_spi[@]}"}
+                fi
                 ;;
             lwip)
                 suite "$name" python3 "$repo/extras/bench/benchlwip.py" --flash --static-ip "$lwip_ip" --port "$port" --fqbn "$fqbn" \
