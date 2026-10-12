@@ -91,6 +91,12 @@ silicon errata. The lwIP interface without the INT pin answers faster.
   was told nothing and went on with the lease it had. On the bench the PHY was
   powered down and up: the address was asked for again and the connections worked
   afterwards.
+* The default MAC address of `ENC28J60Config` is made from the unique id of the board when
+  `begin()` runs, and is no longer the same for every board (02:42:AC:11:00:01). Set
+  `mac_addr` if you need a fixed one, for a reservation in the DHCP server of the router,
+  say.
+* `hasTXComplete()` is deprecated: `sendFrame()` already waits until the frame has left
+  the wire, and the flag it read stayed set from one frame to the next.
 * `PicoENC28J60lwIP` puts the pieces of a chain of buffers together before sending, instead
   of sending the first one only. The core never hands over a chain, so this is a guard.
 * `hasPacket()` is one read of the packet counter.

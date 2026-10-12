@@ -5,6 +5,7 @@
 
 #include <hardware/gpio.h>
 #include <pico/stdlib.h>
+#include <pico/unique_id.h>
 #include <string.h>
 
 extern "C" {
@@ -116,6 +117,30 @@ static bool validConfig(const ENC28J60Config &c)
            c.pio_sm >= -1 && c.pio_sm < (int)NUM_PIO_STATE_MACHINES;
 }
 
+// A MAC address for the board: locally administered and unicast (0x02), the
+// rest from the unique id of the board, which is that of its flash chip
+static void boardMacAddress(uint8_t mac[6])
+{
+    pico_unique_board_id_t id;
+    pico_get_unique_board_id(&id);
+    mac[0] = 0x02;
+    mac[1] = id.id[3] ^ id.id[0];
+    mac[2] = id.id[4] ^ id.id[1];
+    mac[3] = id.id[5] ^ id.id[2];
+    mac[4] = id.id[6];
+    mac[5] = id.id[7];
+}
+
+static bool isZeroMac(const uint8_t mac[6])
+{
+    for (int i = 0; i < 6; i++) {
+        if (mac[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 PicoENC28J60::PicoENC28J60(const ENC28J60Config &config)
     : _config(config), _eth(nullptr), _cfg(nullptr), _initialized(false),
       _irq_callback(nullptr), _irq_user_data(nullptr)
@@ -158,6 +183,10 @@ bool PicoENC28J60::begin()
     if (!validConfig(_config)) {
         _error = Error::Config;
         return false;
+    }
+
+    if (isZeroMac(_config.mac_addr)) {
+        boardMacAddress(_config.mac_addr);
     }
 
     _hardwareReset();

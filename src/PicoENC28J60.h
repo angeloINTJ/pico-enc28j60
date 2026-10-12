@@ -47,8 +47,10 @@ struct ENC28J60Config {
                          // the sketch polls)
 
     // MAC address: locally administered unicast. Give every device on the
-    // network its own.
-    uint8_t mac_addr[6] = { 0x02, 0x42, 0xAC, 0x11, 0x00, 0x01 };
+    // network its own. Left at all zeros, begin() makes one from the unique id
+    // of the board, so that two boards never share it; getMACAddress() says
+    // which.
+    uint8_t mac_addr[6] = { 0, 0, 0, 0, 0, 0 };
 
     // Bytes of the chip's 8 KB RAM used for reception; the rest is the transmit
     // area. Rounded down to an even number and kept between 0x0600 and 0x1A00
@@ -263,6 +265,8 @@ class PicoENC28J60 {
 
     //! A transmission completed (only looks; sendFrame() clears the flag when
     //! it starts)
+    [[deprecated("sendFrame() waits until the frame has left the wire: there "
+                 "is no transmit event to wait for")]]
     bool hasTXComplete();
 
     //! The link went up or down since the last
