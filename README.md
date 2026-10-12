@@ -352,8 +352,8 @@ void setup_network()
 Same API as the other wired Ethernet interfaces of the core (`begin()`,
 `config()`, `connected()`, `localIP()`, `linkStatus()`, ...), plus
 `setPollPeriod(ms)` and `driverStats()`. Do not call the raw driver methods
-while it runs. Tested on a Pico (RP2040) only. Not handled yet: reacting to the
-cable being unplugged and plugged back (no DHCP renewal on a link change).
+while it runs. Tested on a Pico (RP2040) only. When the cable is unplugged and
+plugged back, lwIP is told and asks the DHCP server again.
 
 Give it a config with `irq_pin` set and it is driven by the INT line: the
 interrupt handler only wakes the lwIP context up, which then reads the frames, so
@@ -399,8 +399,12 @@ What it does not do:
    arduino-pico core 6.3.0. The sketches also compile for the Pico W, Pico 2 and
    Pico 2 W, but have not been run on them. The FreeRTOS+TCP driver is the one of
    the original project, and was not built or run here.
- * The lwIP interface does not renew the DHCP lease when the cable is unplugged and
-   plugged back.
+ * The receive buffer of the chip is small (4 KB, 6.5 KB at most with
+   `rx_buffer_size = 0x1A00`; the transmit side only needs one frame) and reading a
+   frame from it takes 3.5 ms, while one can arrive every 1.2 ms. A peer that sends
+   a window of data at once, like several bulk TCP transfers at the same time,
+   overflows it, and TCP recovers slowly: one connection echoes 200 kB at about
+   50 kB/s on the bench, and requests and answers are fine.
 
 ---
 

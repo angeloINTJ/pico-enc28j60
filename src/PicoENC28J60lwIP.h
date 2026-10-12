@@ -95,7 +95,6 @@ class PicoENC28J60LwipDriver {
 
     bool begin(const uint8_t *mac, netif *net)
     {
-        (void)net;
         ENC28J60Config config = _config;
         memcpy(config.mac_addr, mac, 6);
         _eth.setInterruptCallback(_wake, _wakeArg);
@@ -104,7 +103,10 @@ class PicoENC28J60LwipDriver {
         }
         _frameLen = 0;
         _burst = false;
-        _linked = _eth.linkStatus();
+        _netif = nullptr; // no call into lwIP for the state the link starts in
+        _linked = false;
+        _setLinked(_eth.linkStatus());
+        _netif = net;
         _lastLinkCheck = millis();
         return true;
     }
@@ -117,6 +119,7 @@ class PicoENC28J60LwipDriver {
         _frameLen = 0;
         _burst = false;
         _linked = false;
+        _netif = nullptr; // the core removes it
     }
 
     //! Why begin() failed, see PicoENC28J60::lastError()
@@ -237,7 +240,7 @@ class PicoENC28J60LwipDriver {
         uint32_t now = millis();
         if (now - _lastLinkCheck >= LINK_CHECK_MS) {
             _lastLinkCheck = now;
-            _linked = _eth.linkStatus();
+            _setLinked(_eth.linkStatus());
         }
     }
 
@@ -256,7 +259,25 @@ class PicoENC28J60LwipDriver {
         if ((events & PicoENC28J60::INT_LINK_CHANGE) ||
             millis() - _lastLinkCheck >= LINK_CHECK_MS) {
             _lastLinkCheck = millis();
-            _linked = _eth.linkStatus();
+            _setLinked(_eth.linkStatus());
+        }
+    }
+
+    // Keeps lwIP's idea of the link in step with the chip's. When the cable
+    // comes back lwIP asks the DHCP server again, in case the board was moved
+    // to another network, and restarts what depends on the link.
+    void _setLinked(bool up)
+    {
+        if (up == _linked) {
+            return;
+        }
+        _linked = up;
+        if (_netif) {
+            if (up) {
+                netif_set_link_up(_netif);
+            } else {
+                netif_set_link_down(_netif);
+            }
         }
     }
 
@@ -265,6 +286,7 @@ class PicoENC28J60LwipDriver {
     uint8_t _frame[PicoENC28J60::MAX_FRAME_SIZE];
     uint16_t _frameLen = 0;
     bool _linked = false;
+    netif *_netif = nullptr; // the interface of lwIP, from begin() to end()
     bool _burst =
         false; // inside a run of frames that started with an interrupt
     uint32_t _delivered = 0;

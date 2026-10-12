@@ -70,6 +70,12 @@ silicon errata. The lwIP interface without the INT pin answers faster.
   forward. A fixed period made the time of a request depend on where the timer fell
   relative to the answer of the peer: 13 ms or 18 ms for the same page on the bench,
   10 ms now. An idle line costs what it did.
+* `PicoENC28J60lwIP` tells lwIP when the link goes down and up. When the cable comes
+  back lwIP asks the DHCP server again, so a board moved to another network gets an
+  address there at once and not when the lease comes up for renewal; before, lwIP
+  was told nothing and went on with the lease it had. On the bench the PHY was
+  powered down and up: the address was asked for again and the connections worked
+  afterwards.
 * `hasPacket()` is one read of the packet counter.
 * `README.md` has a section on what the library does when things go wrong and what it
   does not do.
