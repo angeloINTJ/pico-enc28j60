@@ -1,53 +1,66 @@
 // Copyright 2026 Ângelo Moisés Alves
 // Licensed under the MIT license, see the LICENSE file for details.
 
+/*
+ * BasicTest - bring the chip up, print every frame that arrives and send a test
+ * frame every 10 seconds, without the INT pin.
+ *
+ * The test frame is a broadcast with the "local experimental" EtherType 0x88B5
+ * of IEEE 802. No host reacts to it, and it says nothing about anybody's IP
+ * address, unlike an ARP or an ICMP packet would. To see it, run
+ *
+ *     sudo tcpdump -i <interface> -e -X ether proto 0x88b5
+ *
+ * on a computer on the same network.
+ */
 #include <PicoENC28J60.h>
 
-// ENC28J60 configuration with default pins
-// Modify these if your wiring is different
+// Default pins; change them if your wiring is different
+//   SCK=GP2, MOSI(SI)=GP3, MISO(SO)=GP4, CS=GP5, RST=GP7, INT=not used
 ENC28J60Config config;
-// config.mosi_pin = 3;   // GP3 - SI (MOSI)
-// config.miso_pin = 4;   // GP4 - SO (MISO)
-// config.sclk_pin = 2;   // GP2 - SCK
-// config.cs_pin = 5;     // GP5 - CS
-// config.rst_pin = 7;    // GP7 - RST
-// config.irq_pin = -1;   // -1 = polling mode
+// config.mosi_pin = 3;
+// config.miso_pin = 4;
+// config.sclk_pin = 2;
+// config.cs_pin = 5;
+// config.rst_pin = 7;
+// config.irq_pin = -1;   // -1: the chip is polled
 
 PicoENC28J60 eth(config);
 
+static const uint16_t TEST_ETHERTYPE = 0x88B5;
+
+static void printMac(const uint8_t *mac) {
+    for (int i = 0; i < 6; i++) {
+        if (mac[i] < 0x10) Serial.print('0');
+        Serial.print(mac[i], HEX);
+        if (i < 5) Serial.print(':');
+    }
+}
+
 void setup() {
     Serial.begin(115200);
-    while (!Serial) delay(10);
-    
+    for (uint32_t t = millis(); !Serial && millis() - t < 3000;) {
+        delay(10);  // give a serial monitor a moment, but do not depend on one
+    }
+
     Serial.println("\n=== PicoENC28J60 Basic Test ===");
     Serial.println("Based on pico-enc28j60 by Lukasz Janyst");
-    
-    // Initialize
+
     Serial.println("Initializing ENC28J60...");
     if (!eth.begin()) {
-        Serial.println("ERROR: Failed to initialize ENC28J60!");
-        Serial.println("Check wiring and power supply.");
+        Serial.printf("ERROR: %s\n", PicoENC28J60::errorString(eth.lastError()));
         while (1) delay(1000);
     }
-    
     Serial.println("ENC28J60 initialized successfully!");
-    
-    // Show revision
-    uint8_t rev = eth.getRevision();
-    Serial.print("Revision ID: 0x");
-    Serial.println(rev, HEX);
-    
-    // Show MAC address
+
+    Serial.printf("Revision ID: 0x%02X\n", eth.getRevision());
+
     uint8_t mac[6];
     eth.getMACAddress(mac);
     Serial.print("MAC Address: ");
-    for (int i = 0; i < 6; i++) {
-        if (mac[i] < 0x10) Serial.print("0");
-        Serial.print(mac[i], HEX);
-        if (i < 5) Serial.print(":");
-    }
+    printMac(mac);
     Serial.println();
-    
+
     // The link takes a second or two to come up after begin()
     Serial.print("Waiting for link");
     for (uint32_t t = millis(); !eth.linkStatus() && millis() - t < 5000;) {
@@ -56,52 +69,40 @@ void setup() {
     }
     Serial.print("\nLink Status: ");
     Serial.println(eth.linkStatus() ? "UP" : "DOWN (is the cable plugged in?)");
-    
+
     Serial.println("\nStarting main loop...");
-    Serial.println("Connect Ethernet cable and watch for packets.");
-    Serial.println("Press Reset to restart.");
+    Serial.println("Frames are printed as they arrive; press Reset to restart.");
 }
 
 void loop() {
-    // Must call poll() regularly in polling mode
-    eth.poll();
-    
     // Check for received packets
     if (eth.hasPacket()) {
-        uint8_t buffer[1520];
+        uint8_t buffer[PicoENC28J60::MAX_FRAME_SIZE];
         uint16_t len = eth.receiveFrame(buffer, sizeof(buffer));
-        
+
         if (len > 0) {
             Serial.printf("\n[RX] Packet received: %d bytes\n", len);
-            
+
             // Print first 64 bytes in hex
             uint16_t print_len = min(len, (uint16_t)64);
             for (uint16_t i = 0; i < print_len; i++) {
-                if (buffer[i] < 0x10) Serial.print("0");
+                if (buffer[i] < 0x10) Serial.print('0');
                 Serial.print(buffer[i], HEX);
-                Serial.print(" ");
+                Serial.print(' ');
                 if ((i + 1) % 16 == 0) Serial.println();
             }
             if (print_len % 16 != 0) Serial.println();
-            
+
             // Basic frame analysis
             if (len >= 14) {
                 Serial.print("  Dst MAC: ");
-                for (int i = 0; i < 6; i++) {
-                    if (buffer[i] < 0x10) Serial.print("0");
-                    Serial.print(buffer[i], HEX);
-                    if (i < 5) Serial.print(":");
-                }
+                printMac(buffer);
                 Serial.println();
-                
+
                 Serial.print("  Src MAC: ");
-                for (int i = 6; i < 12; i++) {
-                    if (buffer[i] < 0x10) Serial.print("0");
-                    Serial.print(buffer[i], HEX);
-                    if (i < 11) Serial.print(":");
-                }
+                printMac(buffer + 6);
                 Serial.println();
-                
+
                 uint16_t ethertype = (buffer[12] << 8) | buffer[13];
                 Serial.printf("  EtherType: 0x%04X", ethertype);
                 if (ethertype == 0x0800) Serial.print(" (IPv4)");
@@ -111,70 +112,41 @@ void loop() {
             }
         }
     }
-    
-    // Check for other interrupts
+
+    // Check for other events
     if (eth.hasLinkChange()) {
         Serial.print("\n[LINK] Link status changed: ");
         Serial.println(eth.linkStatus() ? "UP" : "DOWN");
         eth.acknowledgeInterrupts(PicoENC28J60::INT_LINK_CHANGE);
     }
-    
-    if (eth.hasTXComplete()) {
-        Serial.println("[TX] Transmission complete");
-        eth.acknowledgeInterrupts(PicoENC28J60::INT_TX_COMPLETE);
-    }
-    
+
     if (eth.hasRXError()) {
-        Serial.println("[ERROR] Receive error");
+        Serial.println("[ERROR] Receive buffer overflow: frames were lost");
         eth.acknowledgeInterrupts(PicoENC28J60::INT_RX_ERROR);
     }
-    
-    // Send a test frame every 10 seconds
+
+    // Send a test frame every 10 seconds. sendFrame() returns when the frame
+    // has left the wire, so there is no "transmit complete" event to wait for.
     static uint32_t last_send = 0;
+    static uint32_t counter = 0;
     if (millis() - last_send > 10000) {
         last_send = millis();
-        
-        // Create a simple ARP request frame
+
         uint8_t frame[60] = {0};
-        
-        // Destination MAC (broadcast)
-        memset(frame, 0xFF, 6);
-        
-        // Source MAC
-        eth.getMACAddress(frame + 6);
-        
-        // EtherType: ARP (0x0806)
-        frame[12] = 0x08;
-        frame[13] = 0x06;
-        
-        // ARP payload
-        frame[14] = 0x00; frame[15] = 0x01;  // Hardware type: Ethernet
-        frame[16] = 0x08; frame[17] = 0x00;  // Protocol type: IPv4
-        frame[18] = 0x06;                     // Hardware size: 6
-        frame[19] = 0x04;                     // Protocol size: 4
-        frame[20] = 0x00; frame[21] = 0x01;  // Opcode: Request
-        
-        // Sender MAC (our MAC)
-        eth.getMACAddress(frame + 22);
-        
-        // Sender IP (example: 192.168.1.100)
-        frame[28] = 192; frame[29] = 168; frame[30] = 1; frame[31] = 100;
-        
-        // Target MAC (zero for ARP request)
-        memset(frame + 32, 0, 6);
-        
-        // Target IP (example: 192.168.1.1)
-        frame[38] = 192; frame[39] = 168; frame[40] = 1; frame[41] = 1;
-        
-        // Pad to minimum frame size (60 bytes)
-        // Hardware adds FCS
-        
-        if (eth.sendFrame(frame, 60)) {
-            Serial.println("[TX] ARP request sent");
+        memset(frame, 0xFF, 6);  // destination: broadcast
+        eth.getMACAddress(frame + 6);  // source: us
+        frame[12] = TEST_ETHERTYPE >> 8;
+        frame[13] = TEST_ETHERTYPE & 0xFF;
+        int n = snprintf((char *)frame + 14, sizeof(frame) - 14,
+                         "PicoENC28J60 test frame #%lu", (unsigned long)counter++);
+
+        // The hardware pads a short frame to 60 bytes and appends the FCS
+        if (eth.sendFrame(frame, 14 + n)) {
+            Serial.println("[TX] Test frame sent");
         } else {
             Serial.println("[TX] Failed to send frame");
         }
     }
-    
+
     delay(10);
 }

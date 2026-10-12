@@ -13,11 +13,20 @@
  * interruptPending() looks at the chip instead.
  *
  * Frames are printed as they come, so on a busy network this is chatty. Every
- * 5 seconds the sketch also sends a test frame.
+ * 5 seconds the sketch also sends a test frame, one of three sizes in turn.
+ * They are broadcasts with the "local experimental" EtherType 0x88B5 of IEEE
+ * 802: no host reacts to them, and they say nothing about anybody's IP
+ * address, unlike an ARP or an ICMP packet would. To see them, run
+ *
+ *     sudo tcpdump -i <interface> -e ether proto 0x88b5
+ *
+ * on a computer on the same network.
  */
 #include <PicoENC28J60.h>
 
 PicoENC28J60* eth = nullptr;  // created in setup() with a custom config
+
+static const uint16_t TEST_ETHERTYPE = 0x88B5;
 
 void setup() {
     Serial.begin(115200);
@@ -45,7 +54,7 @@ void setup() {
 
     Serial.println("Initializing ENC28J60...");
     if (!eth->begin()) {
-        Serial.println("ERROR: Failed to initialize ENC28J60!");
+        Serial.printf("ERROR: %s\n", PicoENC28J60::errorString(eth->lastError()));
         while (1) delay(1000);
     }
 
@@ -97,7 +106,7 @@ void loop() {
 }
 
 void processPackets() {
-    uint8_t buffer[1520];
+    uint8_t buffer[PicoENC28J60::MAX_FRAME_SIZE];
 
     while (eth->available()) {
         uint16_t len = eth->receiveFrame(buffer, sizeof(buffer));
@@ -132,6 +141,9 @@ void processPackets() {
                 case 0x86DD: // IPv6
                     Serial.print(" (IPv6)");
                     break;
+                case TEST_ETHERTYPE:
+                    Serial.print(" (test frame)");
+                    break;
                 default:
                     break;
             }
@@ -141,12 +153,13 @@ void processPackets() {
 }
 
 void sendTestFrame() {
-    // Alternate between different frame types
-    static int frame_type = 0;
-    frame_type = (frame_type + 1) % 3;
+    // Three sizes in turn: the shortest frame (14 bytes, which the hardware
+    // pads to 60), a typical one, and the longest that the chip can send
+    static const uint16_t SIZES[] = {14, 300, PicoENC28J60::MAX_FRAME_SIZE};
+    static uint32_t counter = 0;
+    uint16_t frame_len = SIZES[counter++ % 3];
 
-    uint8_t frame[1500] = {0};
-    uint16_t frame_len = 60;
+    static uint8_t frame[PicoENC28J60::MAX_FRAME_SIZE];
 
     // Broadcast destination
     memset(frame, 0xFF, 6);
@@ -154,47 +167,15 @@ void sendTestFrame() {
     // Source MAC
     eth->getMACAddress(frame + 6);
 
-    switch (frame_type) {
-        case 0: // ARP Request
-            frame[12] = 0x08; frame[13] = 0x06;
-            frame[14] = 0x00; frame[15] = 0x01;
-            frame[16] = 0x08; frame[17] = 0x00;
-            frame[18] = 0x06; frame[19] = 0x04;
-            frame[20] = 0x00; frame[21] = 0x01;
-            eth->getMACAddress(frame + 22);
-            frame[28] = 192; frame[29] = 168; frame[30] = 1; frame[31] = 100;
-            memset(frame + 32, 0, 6);
-            frame[38] = 192; frame[39] = 168; frame[40] = 1; frame[41] = 1;
-            Serial.println("[TX] Sending ARP request");
-            break;
-
-        case 1: // IPv4 ICMP Echo Request (ping)
-            frame[12] = 0x08; frame[13] = 0x00;
-            // Minimal IPv4 header
-            frame[14] = 0x45; frame[15] = 0x00; frame[16] = 0x00; frame[17] = 0x3C;
-            frame[18] = 0x00; frame[19] = 0x01; frame[20] = 0x00; frame[21] = 0x00;
-            frame[22] = 0x40; frame[23] = 0x01; frame[24] = 0x00; frame[25] = 0x00;
-            frame[26] = 192; frame[27] = 168; frame[28] = 1; frame[29] = 100;
-            frame[30] = 192; frame[31] = 168; frame[32] = 1; frame[33] = 1;
-            // ICMP header
-            frame[34] = 0x08; frame[35] = 0x00; frame[36] = 0x00; frame[37] = 0x00;
-            frame[38] = 0x00; frame[39] = 0x01; frame[40] = 0x00; frame[41] = 0x01;
-            frame_len = 60;
-            Serial.println("[TX] Sending ICMP echo request");
-            break;
-
-        case 2: // Custom test pattern
-            frame[12] = 0x88; frame[13] = 0xB5; // Custom ethertype
-            for (int i = 14; i < 60; i++) {
-                frame[i] = i & 0xFF;
-            }
-            Serial.println("[TX] Sending custom test pattern");
-            break;
+    frame[12] = TEST_ETHERTYPE >> 8;
+    frame[13] = TEST_ETHERTYPE & 0xFF;
+    for (uint16_t i = 14; i < frame_len; i++) {
+        frame[i] = i & 0xFF;  // a pattern that shows where a byte went wrong
     }
 
     if (eth->sendFrame(frame, frame_len)) {
-        // Frame queued successfully
+        Serial.printf("[TX] Test frame of %u bytes sent\n", frame_len);
     } else {
-        Serial.println("[TX] Failed to queue frame");
+        Serial.println("[TX] Failed to send frame");
     }
 }
