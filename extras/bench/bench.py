@@ -56,8 +56,8 @@ PORT_RX, PORT_ECHO, PORT_TX, PEER_PORT = 9999, 9997, 9998, 9998
 SIZES = [10, 18, 100, 400, 800, 1200, 1472]  # UDP payload sizes
 ALL_TESTS = ["init", "cfgerr", "pioful", "spi", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong",
              "txbburst", "soak", "rxflood", "rxoverflow", "discard", "callback", "linkflag", "setmac", "txstat",
-             "pioshare", "stall", "lifecycle", "txmix", "lostchip", "asyncrx", "asyncdiscard", "asyncfast", "asyncecho",
-             "asynctx", "asyncflood", "asynccycle"]
+             "pioshare", "stall", "lifecycle", "txmix", "txring", "lostchip", "asyncrx", "asyncdiscard", "asyncfast",
+             "asyncecho", "asynctx", "asyncflood", "asynccycle"]
 ASYNC_TESTS = ["asyncrx", "asyncdiscard", "asyncfast", "asyncecho", "asynctx", "asyncflood"]  # one ASYNC session
 DEFAULT_SPI_HZ = 10000000  # ENC28J60Config::spi_hz
 SPI_SPEEDS = [1000000, 3500000, 8000000, 10000000, 12500000, 16000000, 20000000]  # Hz, for the spi test
@@ -748,6 +748,56 @@ def t_txmix(p, host_ip, count=240):
         "duplicates=%d corrupted=%d" % (r[0], 0x2000 - r[0], r[4], r[5], r[1], count, r[2], r[3]) for r in results))
 
 
+def t_txring(p, host_ip, count=240):
+    """Frames go out the way the lwIP interface sends them: the next one is uploaded while the one before is on the wire.
+    With the default receive buffer the transmit area holds two full-size frames, so the next one always finds room
+    and no upload has to wait for the wire. With longer receive buffers, frames of mixed lengths have to find room
+    after the pointers wrapped, and none may be dropped; with 0x145A, seven frames used to make the transmit area give
+    the next frame bytes of the one on the wire, which the board finds from the ids of the frames. Every frame has to
+    arrive intact."""
+    results = []
+    for rx_size, pattern in ((0x1000, 0), (0x1600, 1), (0x1A00, 1), (0x145A, 2)):
+        p.cmd("RESET", "OK")
+        sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sk.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sk.bind(("", PORT_TX))
+        p.send("TXRING %d %d %d" % (rx_size, count, pattern))
+        got, dup, corrupt = set(), 0, 0
+        first = True
+        while len(got) < count:
+            sk.settimeout(15.0 if first else 1.5)  # the board starts over first, and the link takes a while
+            try:
+                data, _ = sk.recvfrom(2048)
+            except socket.timeout:
+                break
+            first = False
+            seq = check_payload(data)
+            if seq is None:
+                corrupt += 1
+            elif seq in got:
+                dup += 1
+            else:
+                got.add(seq)
+        sk.close()
+        done = kv(p.expect("TXRINGDONE", 60))
+        wait_link(p)
+        results.append((rx_size, pattern, len(got), dup, corrupt, done))
+    good = True
+    for rx_size, pattern, got, dup, corrupt, done in results:
+        good = good and got == count and dup == 0 and corrupt == 0 and num(done, "sent") == count and \
+            num(done, "fail") == 0 and num(done, "dropped") == 0 and num(done, "overlaps") == 0 and \
+            num(done, "began") == 1 and num(done, "restored") == 1
+        if pattern == 0:
+            good = good and num(done, "waited") == 0
+    record("txring", good, "; ".join(
+        "receive buffer 0x%04X (transmit area %d bytes), %s: sent %d, failed %d, dropped %d, uploads that waited for the "
+        "wire %d, uploads over the frame on the wire %d; host received %d/%d, duplicates=%d corrupted=%d" %
+        (rx_size, 0x2000 - rx_size, ("full-size frames", "mixed lengths", "the seven frames")[pattern],
+         num(done, "sent"), num(done, "fail"), num(done, "dropped"), num(done, "waited"), num(done, "overlaps"), got,
+         count, dup, corrupt)
+        for rx_size, pattern, got, dup, corrupt, done in results))
+
+
 def t_lostchip(p, ip):
     """The chip is reset behind the back of the driver, the way a glitch of its supply would: checkChip() has to notice,
     configure it again, and the board has to answer pings afterwards."""
@@ -1058,6 +1108,8 @@ def main():
             t_lifecycle(p, args.ip)
         if "txmix" in wanted:
             t_txmix(p, host_ip)
+        if "txring" in wanted:
+            t_txring(p, host_ip)
         if "lostchip" in wanted:
             t_lostchip(p, args.ip)
         if args.irq is not None:

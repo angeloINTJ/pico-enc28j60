@@ -87,6 +87,9 @@ the PIO program) are part of the repository now.
   after `enc28j60_frame_tx_blk()`, so that the next frame can be uploaded while one is
   on the wire, and `enc28j60_frame_tx_ended_blk()`, which tells with one read whether it
   has ended.
+* `txring` in `extras/bench/bench.py` sends through the C driver the way the lwIP
+  interface does, each frame uploaded while the one before is on the wire, with receive
+  buffers of several sizes.
 
 ### Changed
 

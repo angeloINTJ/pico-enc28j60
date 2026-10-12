@@ -26,10 +26,11 @@
  * Before the chip is initialized for real, setup() checks that begin() fails,
  * fast and for the right reason, with no chip behind the pins, with settings
  * that make no sense and with no room left in the PIO. The commands PIOSHARE,
- * STALL, LIFECYCLE, TSV, TXMIX and LOSTCHIP check what the driver does about
- * the other users of the PIO, a state machine that stops, begin() after end(),
- * the status of a transmitted frame, sending with the longest receive buffer, and
- * a chip that was reset behind its back.
+ * STALL, LIFECYCLE, TSV, TXMIX, TXRING and LOSTCHIP check what the driver does
+ * about the other users of the PIO, a state machine that stops, begin() after
+ * end(), the status of a transmitted frame, sending with the longest receive
+ * buffer, uploading a frame while the one before is on the wire, and a chip that
+ * was reset behind its back.
  *
  * The rest of the public API is covered by HOLD, PEEK and DRAIN (the functions that
  * only look, and discardFrame(), on frames that wait in the receive buffer),
@@ -811,6 +812,86 @@ static void cmdTxMix(uint16_t rxSize, uint32_t count)
                   (unsigned long)fail, restored);
 }
 
+// TXRING <receive buffer size> <count> <pattern>: begin() again with that receive buffer and broadcast frames through
+// the C driver the way the lwIP interface sends them: the next frame is uploaded while the one before is still on the
+// wire, and that one is waited for right before the next one starts, or first if there is no room for the next one.
+// The payload lengths come in turn from pattern 0 (all 1472 bytes, full-size frames), pattern 1 (a mix, a short
+// frame and a long one first) or pattern 2 (seven frames after which the transmit area of a receive buffer of 0x145A
+// used to give the next frame the bytes of the one on the wire). TXRINGDONE gives the frames sent and failed, the ones
+// that found no room even with nothing else waiting (dropped), the uploads that found no room while a frame was on the
+// wire (waited), and the uploads that got bytes of the frame on the wire (overlaps), from the ids, which hold where
+// each frame is. The default configuration is back afterwards.
+static bool txRingFinish(enc28j60* h, uint32_t id)
+{
+    return enc28j60_frame_send_finish_blk(h, id, 20000, 15, nullptr) == ENC28J60_TX_OK;
+}
+
+// Do two frames share a byte of the chip? A frame id holds the address of its control byte and of its last byte; the
+// chip writes the status vector in the 7 bytes after it.
+static bool txRingOverlap(uint32_t a, uint32_t b)
+{
+    uint32_t aStart = a >> 16, aEnd = (a & 0xFFFF) + 7, bStart = b >> 16, bEnd = (b & 0xFFFF) + 7;
+    return aStart <= bEnd && bStart <= aEnd;
+}
+
+static void cmdTxRing(uint16_t rxSize, uint32_t count, uint32_t pattern)
+{
+    static const uint8_t bcMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    static const uint8_t bcIp[4] = {255, 255, 255, 255};
+    static const uint16_t FULL[] = {1472};
+    static const uint16_t MIX[] = {58, 1058, 1472, 1472, 1472, 18, 1472, 600, 1472, 1000, 1472, 1300};
+    static const uint16_t WRAP[] = {1424, 1004, 879, 13, 470, 1463, 1447};  // frames of 1466, 1046 ... 1489 bytes
+    const uint16_t* plens = pattern == 2 ? WRAP : pattern == 1 ? MIX : FULL;
+    size_t n = pattern == 2   ? sizeof(WRAP) / sizeof(WRAP[0])
+               : pattern == 1 ? sizeof(MIX) / sizeof(MIX[0])
+                              : sizeof(FULL) / sizeof(FULL[0]);
+    eth.end();
+    ENC28J60Config c = makeConfig();
+    c.rx_buffer_size = rxSize;
+    bool began = eth.begin(c);
+    for (uint32_t t0 = millis(); began && !eth.linkStatus() && millis() - t0 < 10000;) {
+        delay(50);  // the link takes a moment to come up after begin()
+    }
+    enc28j60* h = driverHandle();
+    uint32_t onWire = ENC28J60_INVALID_FRAME_ID;
+    uint32_t ok = 0, fail = 0, dropped = 0, waited = 0, overlaps = 0;
+    for (uint32_t s = 0; began && s < count; s++) {
+        uint16_t plen = plens[s % n];
+        uint8_t* p = txbuf + 42;
+        memcpy(p, "PBNC", 4);
+        wr32(p + 4, s);
+        wr16(p + 8, plen);
+        for (uint16_t i = HDR_LEN; i < plen; i++) p[i] = fill(s, i);
+        uint16_t flen = finishUdp(txbuf, bcMac, bcIp, PORT_ECHO, PORT_TX, plen, (uint16_t)s);
+        uint32_t id = enc28j60_frame_upload_blk(h, flen, txbuf);
+        if (id == ENC28J60_INVALID_FRAME_ID && onWire != ENC28J60_INVALID_FRAME_ID) {
+            waited++;
+            txRingFinish(h, onWire) ? ok++ : fail++;
+            onWire = ENC28J60_INVALID_FRAME_ID;
+            id = enc28j60_frame_upload_blk(h, flen, txbuf);
+        }
+        if (id == ENC28J60_INVALID_FRAME_ID) {
+            dropped++;
+            continue;
+        }
+        if (onWire != ENC28J60_INVALID_FRAME_ID) {
+            if (txRingOverlap(id, onWire)) overlaps++;
+            txRingFinish(h, onWire) ? ok++ : fail++;
+        }
+        enc28j60_frame_tx_blk(h, id);
+        onWire = id;
+    }
+    if (onWire != ENC28J60_INVALID_FRAME_ID) {
+        txRingFinish(h, onWire) ? ok++ : fail++;
+    }
+    eth.end();
+    bool restored = eth.begin(makeConfig());
+    Serial.printf("TXRINGDONE rx=0x%04X pattern=%lu began=%d sent=%lu fail=%lu dropped=%lu waited=%lu overlaps=%lu "
+                  "restored=%d\n",
+                  rxSize, (unsigned long)pattern, began, (unsigned long)ok, (unsigned long)fail, (unsigned long)dropped,
+                  (unsigned long)waited, (unsigned long)overlaps, restored);
+}
+
 // PIOSHARE: start PIO users of the core, TX only serial ports, until there is no state machine left.
 // The one of the driver has to stay with the driver, and the chip has to go on answering.
 static void cmdPioShare()
@@ -1264,6 +1345,8 @@ static void handleCommand(char* line)
         cmdSpiTest(g, n);
     } else if (sscanf(line, "TXMIX %u %lu", &a, &n) == 2) {
         cmdTxMix(a, n);
+    } else if (sscanf(line, "TXRING %u %lu %lu", &a, &n, &g) == 3) {
+        cmdTxRing((uint16_t)a, n, g);
     } else if (sscanf(line, "TSV %u %u", &a, &b) == 2) {
         cmdTsv((uint16_t)a, b != 0);
     } else if (sscanf(line, "TXB %lu %u %lu", &n, &a, &g) == 3) {
