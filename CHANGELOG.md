@@ -4,10 +4,13 @@
 
 Robustness of the driver: it no longer hangs when the PIO does not run, shares the PIO
 with the rest of the sketch, reports why it could not start, and follows more of the
-silicon errata. The lwIP interface without the INT pin answers faster.
+silicon errata. The lwIP interface without the INT pin answers faster, and TCP no
+longer stalls when a peer sends a window of full-size segments.
 
 ### Added
 
+* `PicoENC28J60lwIP::droppedNoBuffer()` counts the frames that lwIP had no buffer for and
+  dropped.
 * `PicoENC28J60::end()` stops the chip and gives back the state machine, the pins and
   the memory; `begin()` can start it again. The destructor calls it. `enc28j60_deinit()`
   did nothing before.
@@ -37,9 +40,9 @@ silicon errata. The lwIP interface without the INT pin answers faster.
   reset behind the back of the driver.
 * `extras/bench/BenchLwip` and `benchlwip.py`: tests of the lwIP interface on the
   hardware, with the PC on the other side: DHCP, ping both ways, TCP and UDP servers,
-  a TCP client, DNS, a static address, `end()` followed by `begin()`, fragmented
-  datagrams, chained buffers, a chip that was reset behind the back of the interface, and
-  the cable being pulled out and put back.
+  a TCP client, bulk transfers through three connections at once, DNS, a static address,
+  `end()` followed by `begin()`, fragmented datagrams, chained buffers, a chip that was
+  reset behind the back of the interface, and the cable being pulled out and put back.
 * A GitHub Actions workflow: `arduino-lint`, the formatting of the sources, and a build
   of every example for the Pico, Pico W, Pico 2 and Pico 2 W.
 * `extras/tools/regenerate-pio-header.sh` regenerates `src/enc28j60-spi.pio.h` with the
@@ -53,6 +56,19 @@ silicon errata. The lwIP interface without the INT pin answers faster.
 
 ### Fixed
 
+* TCP connections stalled when a peer sent a window of full-size segments. The core puts
+  each frame it receives in one block of the heap of lwIP, which has 16 KB in the core.
+  When a segment went missing, the ones behind it waited out of order and took the heap,
+  and the missing one, sent again, found no block of 1514 bytes: it was dropped every
+  time, and the connection stalled until a timeout of the peer ended it. The interface
+  receives every frame in buffers from the pool of lwIP now, which are not taken from
+  that heap. On the bench, three connections at once, each echoing 64 kB, stalled at
+  least one of them in each of the four attempts (a round took 49 s in the end) and now
+  finish in two seconds; a single connection echoing 200 kB went from 49 kB/s to
+  207 kB/s. The slower clock hid the problem for a single connection (80 transfers of
+  64 kB in a row did not stall at 3.5 MHz): the buffer of the chip overflowed before the
+  heap did. With a faster clock 1 of the first 12 stalled at 8 MHz and 3 of the first 25
+  at 16 MHz.
 * The driver never claimed its PIO state machine. The Arduino core gives the first free
   one to `SerialPIO` and the like; it fills `pio1` first, so with five `SerialPIO`
   objects the fifth landed on the state machine of the driver and every call to the

@@ -168,6 +168,9 @@ class PicoENC28J60LwipDriver {
     // held, which is what keeps the PIO state machine to one user at a time.
     uint16_t readFrameSize()
     {
+        if (!_receiving) {
+            return 0; // the core's own polling gets none, see receive()
+        }
         if (_frameLen != 0) {
             return _frameLen;
         }
@@ -226,6 +229,32 @@ class PicoENC28J60LwipDriver {
     void discardFrame(uint16_t)
     {
         _frameLen = 0;
+        _noBuffer++;
+        _burst = false; // the next call starts from the INT line again
+    }
+
+    //! Only the receive loop of PicoENC28J60lwIP takes frames out of the chip,
+    //! and says so with this
+    void setReceiving(bool on)
+    {
+        _receiving = on;
+    }
+
+    //! Puts the frame that readFrameSize() announced into p, which may be a
+    //! chain of buffers, and forgets it
+    void takeFrame(struct pbuf *p)
+    {
+        pbuf_take(p, _frame, _frameLen);
+        _frameLen = 0;
+        _delivered++;
+        _traffic++;
+    }
+
+    //! Frames dropped because lwIP had no buffer for them; the peer sends them
+    //! again
+    uint32_t droppedNoBuffer() const
+    {
+        return _noBuffer;
     }
 
     // Refreshed by the polling worker, so this is safe to call from loop().
@@ -330,6 +359,12 @@ class PicoENC28J60LwipDriver {
         false; // inside a run of frames that started with an interrupt
     uint32_t _delivered = 0;
     uint32_t _traffic = 0;
+    uint32_t _noBuffer = 0;
+#ifdef __FREERTOS
+    bool _receiving = true; // the core takes the frames
+#else
+    bool _receiving = false; // only receive() takes them
+#endif
     uint32_t _lastLinkCheck = 0;
     uint32_t _lastHealthCheck = 0;
     void (*_wake)(void *) = nullptr;
@@ -421,13 +456,44 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
 
   private:
 #ifndef __FREERTOS
+    // Hands to lwIP the frames that wait in the chip, RX_BURST_LIMIT at most.
+    // The core does that in handlePackets(), but puts every frame in one block
+    // of the heap of lwIP (PBUF_RAM), which has 16 KB. A few segments that wait
+    // out of order in a TCP connection, or unread in the buffers of the
+    // application, are enough to leave no block of 1514 bytes: the segment that
+    // is missing is sent again and dropped every time, and the connection
+    // stalls until a timeout. The buffers of the pool do not come out of that
+    // heap, and a frame that does not fit one is put in a chain.
+    void receive()
+    {
+        netif *ni = getNetIf();
+        setReceiving(true);
+        for (uint32_t i = 0; i < RX_BURST_LIMIT; i++) {
+            uint16_t len = readFrameSize();
+            if (len == 0) {
+                break;
+            }
+            pbuf *p = pbuf_alloc(PBUF_RAW, len, PBUF_POOL);
+            if (p == nullptr) {
+                discardFrame(len);
+                break;
+            }
+            takeFrame(p);
+            _packetsReceived++; // what packetsReceived() counts
+            if (ni->input(p, ni) != ERR_OK) {
+                pbuf_free(p);
+            }
+        }
+        setReceiving(false);
+    }
+
     // One round of work, in the lwIP context with its lock held. Returns true
-    // if lwIP stopped reading frames because of its limit per call, so that
-    // there may be more.
+    // if receive() stopped reading frames because of its limit per call, so
+    // that there may be more.
     bool service()
     {
         uint32_t before = delivered();
-        handlePackets();
+        receive();
         sys_check_timeouts();
         return delivered() - before >= RX_BURST_LIMIT || moreWaiting();
     }
@@ -510,7 +576,8 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
                                        &self->_irqWorker);
     }
 
-    // lwIP's handlePackets() hands over this many frames at most per call
+    // receive() hands over this many frames at most per call, as the
+    // handlePackets() of the core does
     static constexpr uint32_t RX_BURST_LIMIT = 9;
 
     // The polling period right after traffic; it doubles from there while the

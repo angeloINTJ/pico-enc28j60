@@ -261,6 +261,14 @@ board. Do not call the raw driver methods while it runs. Tested on a Pico (RP204
 only. When the cable is unplugged and plugged back, lwIP is told and asks the DHCP
 server again.
 
+Every frame is handed to lwIP in buffers from its pool. The receive loop of the core
+puts each one in a block of the heap of lwIP, which has 16 KB in the core, and a few
+segments waiting there, out of order in a TCP connection or unread by the application,
+left no block of 1514 bytes for the segment that was missing: it was dropped every time
+it was sent again, and the connection stalled for as long as the timeouts of the peer
+took. The FreeRTOS builds of the core do not run the polling worker of the library, and
+keep that receive loop.
+
 Give it a config with `irq_pin` set and it is driven by the INT line: the interrupt
 handler only wakes the lwIP context up, which then reads the frames, so the chip is
 never touched from interrupt context. On the bench that took the median time of a
@@ -343,7 +351,7 @@ board and your LAN, driven by Python scripts on the PC:
 | Script | Sketch | What it checks |
 |--------|--------|----------------|
 | `bench.py` | `BenchTest` | the raw class: ping, receive and echo streams, transmit streams, a long soak, a receiver overload, configuration errors, a PIO that does not run, a chip that is reset, and the INT pin |
-| `benchlwip.py` | `BenchLwip` | the lwIP interface: DHCP, ping both ways, TCP and UDP servers and clients, a cable that is pulled out, a chip that is reset, a static address, repeated `end()` and `begin()` |
+| `benchlwip.py` | `BenchLwip` | the lwIP interface: DHCP, ping both ways, TCP and UDP servers and clients, bulk transfers through several connections, a cable that is pulled out, a chip that is reset, a static address, repeated `end()` and `begin()` |
 | `webtest.py` | `WebServerLedToggle` | the web example: sequential and parallel requests, 100 toggles, a soak |
 
 ```

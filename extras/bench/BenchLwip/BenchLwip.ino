@@ -27,6 +27,9 @@
  *   CHAIN <port> <n>                broadcast <n> UDP datagrams sent as chains of pbufs
  *   LOSTCHIP                        reset the chip behind the back of the interface
  *   DIAG                            registers of the chip and pointers of the driver
+ *   HOLD <0|1>                      1: the TCP echo server stops reading, so what the peer sends waits
+ *                                   in lwIP
+ *   HEAPBLOCK                       the biggest block that the heap of lwIP can give right now
  *   RESET                           zero the counters of the echo servers
  *
  * Wiring: ENC28J60Config defaults (SCK=GP2 MOSI=GP3 MISO=GP4 CS=GP5 RST=GP7).
@@ -39,6 +42,7 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <lwip/dhcp.h>
+#include <lwip/mem.h>
 #include <lwip/netif.h>
 #include <lwip/prot/dhcp.h>
 
@@ -153,6 +157,8 @@ static void stopServers()
     udpEcho.stop();
 }
 
+static bool holdTcp = false;  // HOLD 1: what the peer sends stays in lwIP
+
 static void serveTcp()
 {
     WiFiClient c = tcpEcho.accept();
@@ -176,6 +182,9 @@ static void serveTcp()
             continue;
         }
         int n = cl.available();
+        if (n > 0 && holdTcp) {
+            continue;
+        }
         if (n > 0) {
             uint8_t buf[512];
             if (n > (int)sizeof buf) {
@@ -288,13 +297,14 @@ static void cmdInfo()
     Serial.printf(
         "INFO link=%d connected=%d ip=%s dhcp_state=%d xid=%lu heap=%lu rx=%lu tx=%lu txfail=%lu io=%lu "
         "rec=%lu linkcb_up=%lu linkcb_down=%lu tcp_accepted=%lu tcp_closed=%lu tcp_bytes=%lu tcp_rejected=%lu "
-        "udp_dgrams=%lu udp_bytes=%lu irqpin=%d\n",
+        "udp_dgrams=%lu udp_bytes=%lu irqpin=%d nobuf=%lu\n",
         eth.linkStatus() == LinkON, eth.connected(), ipText(eth.localIP()).c_str(), dhcpState(),
         (unsigned long)dhcpXid(), (unsigned long)rp2040.getFreeHeap(), (unsigned long)s.rx_frames,
         (unsigned long)s.tx_frames, (unsigned long)s.tx_failures, (unsigned long)s.io_errors,
         (unsigned long)s.recoveries, (unsigned long)linkcb.up, (unsigned long)linkcb.down,
         (unsigned long)srv.accepted, (unsigned long)srv.closed, (unsigned long)srv.bytes,
-        (unsigned long)srv.rejected, (unsigned long)srv.dgrams, (unsigned long)srv.dbytes, BENCH_IRQ_PIN);
+        (unsigned long)srv.rejected, (unsigned long)srv.dgrams, (unsigned long)srv.dbytes, BENCH_IRQ_PIN,
+        (unsigned long)eth.droppedNoBuffer());
 }
 
 static void cmdPing(char* args)
@@ -676,6 +686,25 @@ static void cmdDiag()
         (unsigned long)s.tx_aborts, (unsigned long)s.tx_retries, (unsigned long)s.rx_frames);
 }
 
+// HEAPBLOCK: the biggest block that the heap of lwIP (16 KB in the core) can give right now. A frame that
+// waits in lwIP must not take its place there.
+static void cmdHeapBlock()
+{
+    static const uint16_t SIZES[] = {16384, 14336, 12288, 10240, 8192, 6144, 4096, 3072, 2048, 1514, 1024, 512};
+    uint16_t largest = 0;
+    ethernet_arch_lwip_begin();
+    for (uint16_t size : SIZES) {
+        void* block = mem_malloc(size);
+        if (block) {
+            mem_free(block);
+            largest = size;
+            break;
+        }
+    }
+    ethernet_arch_lwip_end();
+    Serial.printf("HEAPBLOCK largest=%u\n", largest);
+}
+
 static void handleLine(char* line)
 {
     char* args = strchr(line, ' ');
@@ -706,6 +735,11 @@ static void handleLine(char* line)
         cmdLostChip();
     } else if (strcmp(line, "DIAG") == 0) {
         cmdDiag();
+    } else if (strcmp(line, "HOLD") == 0) {
+        holdTcp = args && args[0] == '1';
+        Serial.println("HOLD ok=1");
+    } else if (strcmp(line, "HEAPBLOCK") == 0) {
+        cmdHeapBlock();
     } else if (strcmp(line, "RESET") == 0) {
         memset(&srv, 0, sizeof srv);
         Serial.println("RESET ok=1");

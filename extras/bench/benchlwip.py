@@ -31,7 +31,7 @@ from bench import Pico, REPO, find_port, flash, info, kv, local_ip_for, num, rec
 
 SKETCH = os.path.join(REPO, "extras", "bench", "BenchLwip")
 PORT_TCP_ECHO, PORT_UDP_ECHO = 7007, 7008
-ALL_TESTS = ["dhcp", "ping", "tcp", "tcppar", "tcpcycle", "udp", "pingout", "client", "udpsend", "chain", "dns",
+ALL_TESTS = ["dhcp", "ping", "tcp", "tcppar", "tcpbulk", "rxbuf", "tcpcycle", "udp", "pingout", "client", "udpsend", "chain", "dns",
              "flap", "lostchip", "static", "lifecycle", "heap"]
 
 
@@ -185,9 +185,8 @@ def pingpong(ip, rounds, size, seed, port=PORT_TCP_ECHO, timeout=20):
 
 
 def t_tcppar(c):
-    """Several connections at once, each asking and getting an answer in turn, the way clients of a server do. (A
-    bulk transfer through several connections at once is more than the chip can take: it can read a frame
-    from its buffer in 3.5 ms, a frame arrives every 1.2 ms, and TCP backs off when it loses frames.)"""
+    """Several connections at once, each asking and getting an answer in turn, the way clients of a server do. (The
+    bulk transfers are in tcpbulk.)"""
     results = {}
 
     def run(i):
@@ -203,6 +202,72 @@ def t_tcppar(c):
     ok = len(results) == 3 and all(r[0] == 150 and not r[1] for r in results.values())
     record("tcppar", ok, "3 connections at once, 150 round trips of 300 random bytes each, in %.1f s: %s" %
            (secs, ", ".join("%d intact%s" % (r[0], " (%s)" % r[1] if r[1] else "") for _, r in sorted(results.items()))))
+
+
+def t_tcpbulk(c, rounds=2, size=64000):
+    """Bulk transfers through three connections at once, the way a client that fetches several files does: each
+    sends `size` bytes in chunks of random sizes and reads them back from the echo server. The peer sends whole
+    windows of full-size segments, and when one of them goes missing the ones behind it wait out of order in lwIP
+    while the missing one is sent again. They used to take every block of 1514 bytes of the heap of lwIP, so the
+    segment that was missing could not be received, and the connection stalled for as long as the timeouts of the
+    peer took."""
+    slow = 0.0
+    problems = []
+    for rnd in range(rounds):
+        results = {}
+
+        def run(i):
+            results[i] = tcp_echo(c.board_ip, size, 30 + 10 * rnd + i, timeout=20)
+
+        threads = [threading.Thread(target=run, args=(i,)) for i in range(3)]
+        t0 = time.time()
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(90)
+        secs = time.time() - t0
+        slow = max(slow, secs)
+        for i, r in sorted(results.items()):
+            if not r[0]:
+                problems.append("round %d connection %d: %d of %d bytes%s" % (rnd, i, r[2], size, " (%s)" % r[3] if r[3] else ""))
+        if len(results) != 3:
+            problems.append("round %d: %d connections did not finish" % (rnd, 3 - len(results)))
+    dropped = num(c.info(), "nobuf")
+    record("tcpbulk", not problems and slow < 20,
+           "%d rounds of 3 connections at once, %d bytes each echoed through them, the slowest round took %.1f s; "
+           "frames lwIP had no buffer for: %d%s" % (rounds, size, slow, dropped, "; " + "; ".join(problems) if problems else ""))
+
+
+def t_rxbuf(c):
+    """What the peer sends and the application does not read yet waits in buffers of lwIP. Those buffers must not
+    come out of the heap of lwIP, which is small (16 KB in the core): the heap is where frames used to be put, and
+    with a window of segments waiting there was no room left for the next one."""
+    c.p.cmd("HOLD 1", "HOLD")
+    before = num(kv(c.p.cmd("HEAPBLOCK", "HEAPBLOCK")), "largest")
+    payload = random_bytes(7, 11000)  # a window of the board: eight segments
+    got = b""
+    err = ""
+    held = 0
+    try:
+        s = socket.create_connection((c.board_ip, PORT_TCP_ECHO), timeout=10)
+        s.settimeout(15)
+        s.sendall(payload)
+        time.sleep(1.5)
+        held = num(kv(c.p.cmd("HEAPBLOCK", "HEAPBLOCK")), "largest")
+        c.p.cmd("HOLD 0", "HOLD")
+        while len(got) < len(payload):
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            got += chunk
+        s.close()
+    except OSError as e:
+        err = str(e)
+    finally:
+        c.p.cmd("HOLD 0", "HOLD")
+    record("rxbuf", held >= before - 2048 and got == payload,
+           "%d bytes waiting unread in lwIP: the biggest block of its heap went from %d to %d bytes; read back %d bytes%s" %
+           (len(payload), before, held, len(got), "; " + err if err else ""))
 
 
 def t_tcpcycle(c):
@@ -491,7 +556,8 @@ def t_heap(c):
 
 
 TESTS = {
-    "dhcp": t_dhcp, "ping": t_ping, "tcp": t_tcp, "tcppar": t_tcppar, "tcpcycle": t_tcpcycle, "udp": t_udp,
+    "dhcp": t_dhcp, "ping": t_ping, "tcp": t_tcp, "tcppar": t_tcppar, "tcpbulk": t_tcpbulk, "rxbuf": t_rxbuf,
+    "tcpcycle": t_tcpcycle, "udp": t_udp,
     "pingout": t_pingout, "client": t_client, "udpsend": t_udpsend, "chain": t_chain, "dns": t_dns, "flap": t_flap,
     "lostchip": t_lostchip,
     "static": t_static, "lifecycle": t_lifecycle, "heap": t_heap,

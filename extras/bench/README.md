@@ -75,6 +75,8 @@ python3 extras/bench/benchlwip.py --flash --irq 6 --static-ip 192.168.3.78   # I
 | `ping`    | the PC pings the board, also with 1400-byte payloads (3000-byte pings, which are fragmented, are reported) |
 | `tcp`     | 200000 random bytes, in chunks of random sizes, are echoed through one connection by the TCP server of the board |
 | `tcppar`  | three connections at once, each asking and getting an answer 150 times |
+| `tcpbulk` | 64 kB through each of three connections at once, in chunks of random sizes, twice: they all come back intact within seconds, and none stalls |
+| `rxbuf`   | 11 kB that the peer sent and the application did not read yet wait in lwIP: they leave the heap of lwIP (16 KB in the core) as it was |
 | `tcpcycle`| 40 connections opened, used and closed in a row: all work, the heap does not shrink |
 | `udp`     | datagrams of 1 to 1472 bytes are echoed, none lost or corrupted (a 3000-byte one, fragmented, is reported) |
 | `pingout` | the board pings the PC |
@@ -88,9 +90,7 @@ python3 extras/bench/benchlwip.py --flash --irq 6 --static-ip 192.168.3.78   # I
 | `lifecycle` | `end()` and `begin()` three times: every start gets an address and the heap does not shrink |
 | `heap`    | the free heap at the end against the beginning |
 
-A bulk transfer through several connections at once is not among them: the chip
-reads a frame from its buffer in 3.5 ms and a frame can arrive every 1.2 ms, so
-that only makes TCP back off. The sketch also answers `DIAG`, which prints the
+The sketch answers `DIAG`, which prints the
 registers of the chip and the pointers of the driver, for finding out why a
 transfer failed.
 
