@@ -242,14 +242,12 @@ bool PicoENC28J60::begin()
     _recoverWait = false;
 
     if (_config.irq_pin >= 0) {
-        // INT is active low. The first interruptPending() reports true in any
-        // case, in case the line was already low before the handler existed.
-        _irq_pending = true;
+        // INT is active low
         pinMode(_config.irq_pin, INPUT_PULLUP);
         attachInterruptParam(_config.irq_pin, _staticIRQHandler, FALLING, this);
         _irq_attached = true;
-        _enableChipInterrupts();
     }
+    _enableChipInterrupts();
 
     return true;
 }
@@ -276,11 +274,23 @@ void PicoENC28J60::end()
     _irq_pending = false;
 }
 
-// sendFrame() waits for the transmission itself, so TXIE stays off
+// Runs whenever the chip has just been configured, with or without the INT pin
+// wired: the flags that peekInterruptFlags(), hasLinkChange() and
+// interruptPending() read are raised on their own, except the link change flag,
+// which needs the PHY interrupt on (data sheet, section 12). sendFrame() waits
+// for the transmission itself, so TXIE stays off.
 void PicoENC28J60::_enableChipInterrupts()
 {
     enc28j60_irq_enable_blk(driver(_eth),
                             INT_PACKET_RX | INT_LINK_CHANGE | INT_RX_ERROR);
+
+    // With the INT pin, the line may be low already, from before the handler
+    // existed or from before the chip was started over: the next
+    // interruptPending() reports true in any case. Without it the flags of the
+    // chip are looked at every time.
+    if (_config.irq_pin >= 0) {
+        _irq_pending = true;
+    }
 }
 
 // The driver gave up on the state machine, see enc28j60_io_failed(): count it,
@@ -307,16 +317,12 @@ bool PicoENC28J60::_usable()
 
     // The chip may have been affected as well, so it starts from its reset
     _hardwareReset();
-    bool recovered = enc28j60_recover(driver(_eth));
-    if (recovered && _config.irq_pin >= 0) {
-        _enableChipInterrupts();
-        _irq_pending = true;
-    }
-    if (!recovered) {
+    if (!enc28j60_recover(driver(_eth))) {
         _recoverAt = millis() + RECOVER_RETRY_MS;
         _recoverWait = true;
         return false;
     }
+    _enableChipInterrupts();
     _recoverWait = false;
     _ioCounted = false;
     _stats.recoveries++;
@@ -357,10 +363,7 @@ bool PicoENC28J60::checkChip()
     if (!enc28j60_recover(eth)) {
         return false;
     }
-    if (_config.irq_pin >= 0) {
-        _enableChipInterrupts();
-        _irq_pending = true;
-    }
+    _enableChipInterrupts();
     _stats.recoveries++;
     return true;
 }

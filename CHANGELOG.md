@@ -62,6 +62,13 @@ silicon errata. The lwIP interface without the INT pin answers faster.
   after about 8 ms without progress, reads zeros, and the class recovers (see above).
 * `pio_add_program()` returns a negative number when the instruction memory is full;
   that was taken for an offset.
+* Without the INT pin, `hasLinkChange()` and `INT_LINK_CHANGE` never reported a change of the link
+  (so the link message of `BasicTest` never appeared), and `interruptPending()` ignored it. The chip
+  raises its link flag only when the PHY interrupt is on (data sheet, section 12), and the library
+  switched that on only when `irq_pin` was set. `begin()` and the recovery after a failure do it
+  either way now. On the bench the PHY was powered down and up again: without the change
+  `hasLinkChange()` stayed false both times, with it both changes were seen and cleared by
+  `acknowledgeInterrupts()`.
 * `hasPacket()` and `interruptPending()` without the INT pin read `EIR.PKTIF`, which
   the silicon errata (issue 6) says is unreliable, and could miss a frame. The
   packet counter is used now, also for `INT_PACKET_RX` in `getInterruptFlags()` and

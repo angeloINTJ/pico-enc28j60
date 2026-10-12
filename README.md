@@ -185,7 +185,9 @@ void loop() {
 ```
 
 The same loop works without the wire (`irq_pin` left at -1): `interruptPending()` then
-reads the chip's flags instead. The library sets the pin up with the internal pull-up
+reads the chip's flags instead, and reports a change of the link as well. Acknowledge the
+flags you get, with or without the wire: a flag that stays set keeps `interruptPending()`
+true. The library sets the pin up with the internal pull-up
 and attaches the interrupt through the Arduino core, so your own `attachInterrupt()`
 calls keep working.
 
