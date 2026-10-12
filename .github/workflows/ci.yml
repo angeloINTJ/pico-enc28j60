@@ -76,6 +76,10 @@ jobs:
           # the program itself must be the same
           program() { grep -E '0x[0-9a-f]{4}|#define enc28j60_spi_(wrap|offset)|\.length|\.origin' "$1"; }
           diff <(program /tmp/enc28j60-spi.pio.h) <(program src/enc28j60-spi.pio.h)
+      - name: The program keeps the SPI timing of the data sheet
+        # The assembled program is simulated at the fastest SPI clock of the driver; the chip select
+        # times and the clock period of table 16-6 have to be met (extras/tools/pio-sim.py says how)
+        run: python3 extras/tools/pio-sim.py --check
 
   compile:
     name: ${{ matrix.board }}
