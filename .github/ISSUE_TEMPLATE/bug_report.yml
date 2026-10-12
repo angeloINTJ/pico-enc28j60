@@ -23,7 +23,7 @@ body:
     id: version
     attributes:
       label: Version of this library
-      placeholder: "1.1.0, or the commit"
+      placeholder: "1.2.0, or the commit"
     validations:
       required: true
   - type: input

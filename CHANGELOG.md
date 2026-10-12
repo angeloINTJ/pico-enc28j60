@@ -1,12 +1,17 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 - 2026-10-12
 
 Robustness of the driver: it no longer hangs when the PIO does not run, shares the PIO
 with the rest of the sketch, reports why it could not start, and follows more of the
 silicon errata. The lwIP interface without the INT pin answers faster, and TCP no
 longer stalls when a peer sends a window of full-size segments. The SPI link is more
 than twice as fast.
+
+Checked on the same bench as 1.1.0, with the arduino-pico core 6.3.0 and the SPI clock
+at its new default of 10 MHz: the 28 tests of `bench.py` (31 with the INT pin), the 17
+tests of `benchlwip.py` and the 8 HTTP tests of `webtest.py`, with and without the INT
+pin, and 20 000 requests in a row to the web example in each mode, none of which failed.
 
 ### Added
 
