@@ -19,23 +19,25 @@
 #define SRC_OP 0x7
 #define MEM_CONST 0x1a
 
-#define SH(VAL, N) (((uint32_t)(VAL & 0xff)) << N)
+// The arguments are in parentheses, so that an expression such as `A | B` is
+// masked as a whole
+#define SH(VAL, N) (((uint32_t)((VAL) & 0xff)) << (N))
 
 // The PIO driver can receive up to 32 bytes with one command and send up to
 // 31 bytes, the sizes are in bits and must be multiples of 8bits, ie. we only
 // transmit th whole bytes
-#define CMD(TXSZ, RXSZ, OPCODE, ADDR, PAYLOAD)                          \
-    (SH((TXSZ + 8), 24) | SH(RXSZ, 16) | SH(OPCODE, 13) | SH(ADDR, 8) | \
-     (PAYLOAD & 0xff))
+#define CMD(TXSZ, RXSZ, OPCODE, ADDR, PAYLOAD)                  \
+    (SH(((TXSZ) + 8), 24) | SH((RXSZ), 16) | SH((OPCODE), 13) | \
+     SH((ADDR), 8) | ((PAYLOAD) & 0xff))
 
 // Extract opcode from a command
-#define CMD_OP(CMD) ((cmd >> 13) & 0x7)
+#define CMD_OP(CMD) (((CMD) >> 13) & 0x7)
 
 // Extract transmit size in bytes from the command
-#define CMD_TXSZ(CMD) (((cmd >> 24) & 0xff) / 8)
+#define CMD_TXSZ(CMD) ((((CMD) >> 24) & 0xff) / 8)
 
 // Extract receive size in bytes from the command
-#define CMD_RXSZ(CMD) (((cmd >> 16) & 0xff) / 8)
+#define CMD_RXSZ(CMD) ((((CMD) >> 16) & 0xff) / 8)
 
 // Read Control Register - ETH registers - receive one byte
 #define RCR_E_CMD(ADDR) CMD(0, 8, RCR_OP, ADDR, 0)
@@ -45,13 +47,13 @@
 #define RCR_M_CMD(ADDR) CMD(0, 16, RCR_OP, ADDR, 0)
 
 // Read Buffer Memory - size in bytes, up to 32
-#define RBM_CMD(SIZE) CMD(0, (SIZE * 8), RBM_OP, MEM_CONST, 0)
+#define RBM_CMD(SIZE) CMD(0, ((SIZE) * 8), RBM_OP, MEM_CONST, 0)
 
 // Write Control Register
 #define WCR_CMD(ADDR, DATA) CMD(8, 0, WCR_OP, ADDR, DATA)
 
 // Write Buffer Memory - size in bytes, up to 31
-#define WBM_CMD(SIZE) CMD((SIZE * 8), 0, WBM_OP, MEM_CONST, 0)
+#define WBM_CMD(SIZE) CMD(((SIZE) * 8), 0, WBM_OP, MEM_CONST, 0)
 
 // Bit Field Set
 #define BFS_CMD(ADDR, DATA) CMD(8, 0, BFS_OP, ADDR, DATA)
