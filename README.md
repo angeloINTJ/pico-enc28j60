@@ -435,6 +435,7 @@ See the examples/ folder:
 | `src/` | The library: the Arduino classes (`PicoENC28J60.*`, `PicoENC28J60lwIP.h`) and the C driver they are built on (`enc28j60-*`, `pico/`) |
 | `examples/` | Arduino sketches |
 | `extras/bench/` | Tests that run on the hardware; not compiled by the Arduino IDE |
+| `extras/tools/` | Scripts for whoever works on the library, like the one that regenerates the PIO header |
 | `freertos/` | The FreeRTOS+TCP driver of the original project, outside `src/` so that the Arduino IDE does not compile it |
 | `imgs/` | Photographs used by this README |
 

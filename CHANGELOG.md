@@ -41,6 +41,10 @@ silicon errata. The lwIP interface without the INT pin answers faster.
   the cable being pulled out and put back.
 * A GitHub Actions workflow: `arduino-lint`, the formatting of the sources, and a build
   of every example for the Pico, Pico W, Pico 2 and Pico 2 W.
+* `extras/tools/regenerate-pio-header.sh` regenerates `src/enc28j60-spi.pio.h` with the
+  pioasm of the core, and the CI checks that the program in the header is the one that
+  pioasm makes of the `.pio` file. The CI also runs the static analyzer of GCC on the C
+  driver.
 * A message at compile time when the core is too old or is not arduino-pico: the raw
   class needs 4.0.0 or newer (checked with 4.0.0), the lwIP interface 5.6.0 or newer
   (checked with 5.6.0; before that the core has no `__getEthernetContext()`). The CI
