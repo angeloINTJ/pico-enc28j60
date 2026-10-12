@@ -123,10 +123,12 @@ class PicoENC28J60 {
     static const char *errorString(Error error);
 
     /**
-     * @brief Stop the chip and give back the PIO state machine and the pins
+     * @brief Stop the chip and give back the PIO state machine, the four SPI
+     * pins and the memory
      *
-     * The destructor does it too. Afterwards begin() starts it again, with a
-     * new configuration if you pass one.
+     * The reset line is left high and the INT pin keeps its pull-up. The
+     * destructor does it too. Afterwards begin() starts it again, with a new
+     * configuration if you pass one.
      */
     void end();
 
@@ -358,6 +360,9 @@ class PicoENC28J60 {
     static constexpr uint8_t INT_TX_COMPLETE = 0x08;
     static constexpr uint8_t INT_PACKET_RX = 0x40;
     static constexpr uint8_t INT_RX_ERROR = 0x01;
+    //! Not a flag: 0x80 is the enable bit of the INT output (EIE.INTIE), EIR
+    //! has no such bit, and no function here returns it
+    [[deprecated("not an interrupt flag: no function returns it")]]
     static constexpr uint8_t INT_GLOBAL = 0x80;
 
   private:

@@ -102,6 +102,8 @@ silicon errata. The lwIP interface without the INT pin answers faster.
   say.
 * `hasTXComplete()` is deprecated: `sendFrame()` already waits until the frame has left
   the wire, and the flag it read stayed set from one frame to the next.
+* `PicoENC28J60::INT_GLOBAL` is deprecated: 0x80 is the enable bit of the INT output
+  (`EIE.INTIE`), `EIR` has no such bit and no function returned it.
 * `PicoENC28J60lwIP` puts the pieces of a chain of buffers together before sending, instead
   of sending the first one only. The core never hands over a chain, so this is a guard.
 * `hasPacket()` is one read of the packet counter.

@@ -218,8 +218,9 @@ stack serve a frame the moment it arrives, see below.
    and `PicoENC28J60::errorString(error)` turns it into text: a pin that is out of
    range or used twice, a state machine that is taken, no PIO with room for the
    program, no chip answering, no memory.
- * `void end()` - stops the chip and gives back the state machine, the pins and the
-   memory; `begin()` starts it again. The destructor calls it.
+ * `void end()` - stops the chip and gives back the state machine, the four SPI pins
+   and the memory; `begin()` starts it again. The destructor calls it. The reset line
+   is left high and the INT pin keeps its pull-up.
  * `bool linkStatus()` - the link takes a second or two to come up after `begin()`.
  * `uint8_t getRevision()`
  * `void getMACAddress(uint8_t* mac) const`, `void setMACAddress(const uint8_t* mac)`
@@ -293,7 +294,12 @@ What it does not do:
  * It is 10 Mbit/s and **half duplex** only, as the chip is. The link partner has to
    detect that by itself, which every switch and router does.
  * SPI runs at 3.5 MHz, so a full-size frame takes about 3.5 ms to move between the
-   chip and the Pico, and the throughput is well below the 10 Mbit/s of the wire.
+   chip and the Pico, and the throughput is well below the 10 Mbit/s of the wire. The
+   clock is worked out from the system clock when `begin()` runs (and again when the
+   chip is started over), so change the system clock before `begin()`, not after.
+ * The receive filter is fixed: a frame is delivered if its CRC is good and it is
+   addressed to the board, to everybody (broadcast) or to a group (multicast). There
+   is no promiscuous mode, and frames with a bad CRC never get to you.
  * `sendFrame()` and the receiving functions block while they talk to the chip; they
    are not meant to be called from interrupt handlers.
  * **Tested on** a Raspberry Pi Pico (RP2040) with an ENC28J60 revision B7 and the
