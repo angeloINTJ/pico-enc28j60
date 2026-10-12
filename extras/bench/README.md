@@ -120,6 +120,7 @@ python3 extras/bench/benchlwip.py --flash --irq 6 --static-ip 192.168.3.78   # I
 | `pingout` | the board pings the PC |
 | `client`  | the board opens a TCP connection to the PC and moves 100 kB each way, checked byte by byte |
 | `udpsend` | the board sends 100 UDP datagrams to the PC |
+| `udprate` | the board sends 500 full-size UDP datagrams to the PC with no pause, timed on the board: how fast frames go out through lwIP; every one has to arrive intact and be counted by the driver as sent, and at the default SPI clock a frame has to take less than one that is uploaded and then waited for (its time on the wire plus its bytes through the SPI: 2.43 ms at 10 MHz), which only uploading it while the one before is on the wire does |
 | `chain`   | the board sends UDP datagrams as chains of three buffers, which arrive whole |
 | `dns`     | the board resolves a name (reported; add `--dns-name` to make it a test) |
 | `flap`    | the PHY is powered down and up, like a cable pulled out and put back: the link change is seen, lwIP is told, the DHCP client asks again, and ping and TCP work afterwards |

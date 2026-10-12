@@ -428,6 +428,9 @@ static void cmdUdpSend(char* args)
     WiFiUDP u;
     static uint8_t buf[1472];
     uint32_t sent = 0, failed = 0;
+    const PicoENC28J60::Stats& s = eth.driverStats();
+    uint32_t frames0 = s.tx_frames, fails0 = s.tx_failures;
+    uint32_t t0 = micros();  // with gap 0 the time says how fast frames go out through lwIP
     for (uint32_t i = 0; i < n; i++) {
         buf[0] = 'U';
         buf[1] = 'D';
@@ -449,7 +452,14 @@ static void cmdUdpSend(char* args)
             delay(gap);
         }
     }
-    Serial.printf("UDPSEND ok=%d sent=%lu failed=%lu\n", failed == 0, (unsigned long)sent, (unsigned long)failed);
+    uint32_t us = micros() - t0;
+    // The counters of the driver: a frame counts once it has left the wire, and the last one is seen by the polling
+    for (uint32_t w0 = millis(); s.tx_frames - frames0 + s.tx_failures - fails0 < sent && millis() - w0 < 20;) {
+        delay(1);
+    }
+    Serial.printf("UDPSEND ok=%d sent=%lu failed=%lu us=%lu spihz=%lu txframes=%lu txfail=%lu\n", failed == 0,
+                  (unsigned long)sent, (unsigned long)failed, (unsigned long)us, (unsigned long)makeConfig().spi_hz,
+                  (unsigned long)(s.tx_frames - frames0), (unsigned long)(s.tx_failures - fails0));
 }
 
 static void cmdDns(char* args)

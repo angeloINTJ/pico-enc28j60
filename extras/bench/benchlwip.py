@@ -31,8 +31,8 @@ from bench import Pico, REPO, find_port, flash, info, kv, local_ip_for, num, rec
 
 SKETCH = os.path.join(REPO, "extras", "bench", "BenchLwip")
 PORT_TCP_ECHO, PORT_UDP_ECHO = 7007, 7008
-ALL_TESTS = ["dhcp", "ping", "tcp", "tcppar", "tcpbulk", "rxbuf", "tcpcycle", "udp", "pingout", "client", "udpsend", "chain", "dns",
-             "flap", "lostchip", "static", "lifecycle", "heap"]
+ALL_TESTS = ["dhcp", "ping", "tcp", "tcppar", "tcpbulk", "rxbuf", "tcpcycle", "udp", "pingout", "client", "udpsend", "udprate",
+             "chain", "dns", "flap", "lostchip", "static", "lifecycle", "heap"]
 
 
 # --- patterns shared with BenchLwip.ino -------------------------------------
@@ -384,11 +384,13 @@ def t_client(c):
             t.get("up_ms", "?"), res.get("got", "?"), res.get("bad", "?"), "; " + res["err"] if "err" in res else ""))
 
 
-def t_udpsend(c):
-    count, size = 100, 200
+def udp_from_board(c, count, size, gap_ms, timeout=30):
+    """The board sends count datagrams of size bytes to this PC, gap_ms apart: its reply, and the sequence numbers
+    of the datagrams that arrived intact plus the number of bad ones."""
     sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sk.bind((c.host_ip, 0))
     sk.settimeout(0.3)
+    sk.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 21)
     port = sk.getsockname()[1]
     seen, bad = set(), 0
     stop = threading.Event()
@@ -413,13 +415,54 @@ def t_udpsend(c):
 
     th = threading.Thread(target=receive)
     th.start()
-    t = kv(c.p.cmd("UDPSEND %s %d %d %d 5" % (c.host_ip, port, count, size), "UDPSEND", 30))
+    t = kv(c.p.cmd("UDPSEND %s %d %d %d %d" % (c.host_ip, port, count, size, gap_ms), "UDPSEND", timeout))
     time.sleep(0.7)
     stop.set()
     th.join(2)
     sk.close()
+    return t, seen, bad
+
+
+def t_udpsend(c):
+    count, size = 100, 200
+    t, seen, bad = udp_from_board(c, count, size, 5)
     record("udpsend", t.get("ok") == "1" and len(seen) == count and bad == 0,
            "the board sent %s datagrams of %d bytes: %d arrived, %d corrupted" % (t.get("sent", "?"), size, len(seen), bad))
+
+
+def t_udprate(c, count=500, size=1472):
+    """Full-size datagrams with no pause: how fast frames go out through lwIP, as the board timed it. Every one
+    has to arrive intact, and the driver has to count every one as sent once it has left the wire. A frame that is
+    uploaded and then waited for takes at least its time on the wire plus the time of its bytes through the SPI; at
+    the default SPI clock the board has to take less, which it does only by uploading each frame while the one
+    before is on the wire. At other clocks the bound is reported, not judged: it leaves out what the commands of the
+    SPI cost, which at slow clocks is more than the overlap saves."""
+    # The board has to know the MAC address of this PC first: while lwIP asks for it (ARP) it keeps only the last
+    # datagram and drops the ones before, which is not what this test measures. A ping makes it ask.
+    host_ping(c.board_ip, 2)
+    t, seen, bad = udp_from_board(c, count, size, 0)
+    us = num(t, "us")
+    spi_hz = num(t, "spihz")
+    frame = size + 42  # with the UDP, IPv4 and Ethernet headers
+    wire_us = (frame + 4 + 8) * 0.8  # with the FCS and the preamble, at 10 Mb/s; the gap after it overlaps the upload
+    bound_us = wire_us + (frame * 8 * 1e6 / spi_hz if spi_hz else 0)
+    per_frame_us = us / count if count else 0
+    judged = spi_hz == bench.DEFAULT_SPI_HZ
+    rate = count * size / 1000.0 / (us / 1e6) if us else 0
+    missing = sorted(set(range(count)) - seen)
+    # Up to two frames more than the datagrams: lwIP may ask again for the address of this PC (ARP) or renew its
+    # DHCP lease in the same second
+    frames, fails = num(t, "txframes"), num(t, "txfail")
+    counted = fails == 0 and count <= frames <= count + 2
+    record("udprate", t.get("ok") == "1" and not missing and bad == 0 and counted and
+           (not judged or 0 < per_frame_us < bound_us),
+           "the board sent %s datagrams of %d bytes with no pause in %.0f ms (%.0f kB/s of payload, %.2f ms a frame; "
+           "uploaded, then waited for, a frame takes at least %.2f ms at %.1f MHz%s): %d arrived%s, %d corrupted; the "
+           "driver counted %d frames sent and %d failed" %
+           (t.get("sent", "?"), size, us / 1000.0, rate, per_frame_us / 1000.0, bound_us / 1000.0, spi_hz / 1e6,
+            "" if judged else ", reported, not judged", len(seen),
+            " (missing %s%s)" % (", ".join(map(str, missing[:8])), "..." if len(missing) > 8 else "") if missing else "",
+            bad, frames, fails))
 
 
 def t_chain(c):
@@ -558,7 +601,7 @@ def t_heap(c):
 TESTS = {
     "dhcp": t_dhcp, "ping": t_ping, "tcp": t_tcp, "tcppar": t_tcppar, "tcpbulk": t_tcpbulk, "rxbuf": t_rxbuf,
     "tcpcycle": t_tcpcycle, "udp": t_udp,
-    "pingout": t_pingout, "client": t_client, "udpsend": t_udpsend, "chain": t_chain, "dns": t_dns, "flap": t_flap,
+    "pingout": t_pingout, "client": t_client, "udpsend": t_udpsend, "udprate": t_udprate, "chain": t_chain, "dns": t_dns, "flap": t_flap,
     "lostchip": t_lostchip,
     "static": t_static, "lifecycle": t_lifecycle, "heap": t_heap,
 }

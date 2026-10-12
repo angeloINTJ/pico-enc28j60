@@ -79,6 +79,10 @@ the PIO program) are part of the repository now.
   it, and the CI checks with it that the chip select times and the clock period of the
   data sheet (table 16-6) hold at the fastest SPI clock. A copy of the program with a
   shorter chip select hold fails it.
+* `udprate` in `extras/bench/benchlwip.py`: the board sends 500 UDP datagrams of 1472
+  bytes with no pause and times them. Every one has to arrive intact and be counted by
+  the driver, and at the default SPI clock a frame has to take less than one that is
+  uploaded and then waited for.
 
 ## 1.2.0 - 2026-10-12
 
