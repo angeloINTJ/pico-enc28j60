@@ -50,6 +50,14 @@ jobs:
             src/*.c src/*.cpp src/PicoENC28J60.h src/PicoENC28J60lwIP.h \
             src/enc28j60-cmd.h src/pico/*.h freertos/*.c freertos/pico/*.h
 
+  docs:
+    name: Markdown links
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the links between the Markdown files
+        run: python3 extras/tools/check-links.py
+
   pio:
     name: PIO header
     runs-on: ubuntu-24.04
