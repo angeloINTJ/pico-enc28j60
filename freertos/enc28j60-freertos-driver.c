@@ -117,7 +117,6 @@ static void driver_task(void *params)
     uint32_t in_progress_frame_id = ENC28J60_INVALID_FRAME_ID;
 
     while (1) {
-        bool rx_ready = false;
         NetworkBufferDescriptor_t *tx_frame_new = NULL;
         tx_frame_new = select_frame(dd, tx_frame == NULL && dd->link_up);
 
@@ -135,7 +134,11 @@ static void driver_task(void *params)
                 FreeRTOS_NetworkDown(dd->iface);
             }
 
-            if (enc28j60_irq_is_tx(flags)) {
+            // A transmit flag ends the frame in progress, sent or given up
+            // on; with none in progress there is nothing to release (the id
+            // would be ENC28J60_INVALID_FRAME_ID, which upsets the buffer)
+            if (enc28j60_irq_is_tx(flags) &&
+                in_progress_frame_id != ENC28J60_INVALID_FRAME_ID) {
                 enc28j60_frame_tx_confirm(dd->drv, in_progress_frame_id);
                 in_progress_frame_id = ENC28J60_INVALID_FRAME_ID;
             }
@@ -184,6 +187,7 @@ static void driver_task(void *params)
 
 static void task_wait(void *arg)
 {
+    (void)arg;
     while (xTaskNotifyWaitIndexed(1, 0, 0, NULL, 10) == pdFALSE)
         ;
 }
@@ -227,9 +231,10 @@ BaseType_t enc28j60_freertos_initialize(struct xNetworkInterface *pxDescriptor)
     eth_cfg->notify.notify = task_notify;
     eth_cfg->notify.wait = task_wait;
 
-    dd->drv = enc28j60_init(eth_cfg);
+    enc28j60_status status;
+    dd->drv = enc28j60_init_status(eth_cfg, &status);
     if (dd->drv == NULL) {
-        panic("No ENC28J60 is answering on the SPI pins");
+        panic("ENC28J60: %s", enc28j60_status_string(status));
     }
     pxDescriptor->pvArgument = dd;
     dd->iface = pxDescriptor;
@@ -242,7 +247,10 @@ enc28j60_freertos_output_frame(struct xNetworkInterface *pxDescriptor,
                                NetworkBufferDescriptor_t *const pxNetworkBuffer,
                                BaseType_t xReleaseAfterSend)
 {
-    // The return value of this function is always ignored
+    // The return value of this function is always ignored. The buffer is
+    // released by the driver task once it is in the chip, which is right with
+    // ipconfigZERO_COPY_TX_DRIVER set, where the stack always hands it over.
+    (void)xReleaseAfterSend;
     driver_data *dd = pxDescriptor->pvArgument;
 
     if (xQueueSend(dd->tx_queue, &pxNetworkBuffer, 0) != pdPASS) {
