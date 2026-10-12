@@ -30,9 +30,11 @@
  * only use PicoENC28J60.h. Once the interface is started, leave the chip to
  * lwIP and do not call the PicoENC28J60 methods yourself.
  *
- * Without an interrupt line the chip is checked for frames every 5 ms
- * (setPollPeriod() changes that) by a timer of this class. The polling of the
- * core cannot be relied on for a device without an interrupt line: it is
+ * Without an interrupt line the chip is checked for frames by a timer of this
+ * class: every 5 ms while the line is quiet (setPollPeriod() changes that), and
+ * sooner, starting at every millisecond, after a frame went out or came in,
+ * when the answer of the peer is most likely about to arrive. The polling of
+ * the core cannot be relied on for a device without an interrupt line: it is
  * rescheduled every time user code calls into lwIP, so a sketch that keeps
  * calling it, like a WebServer loop with a client connected, stops the
  * reception of frames altogether.
@@ -83,6 +85,14 @@ class PicoENC28J60LwipDriver {
         _wakeArg = arg;
     }
 
+    //! Function to call after each frame that goes out, from where lwIP sent
+    //! it, with the lwIP lock held
+    void setSentHook(void (*hook)(void *), void *arg)
+    {
+        _sent = hook;
+        _sentArg = arg;
+    }
+
     bool begin(const uint8_t *mac, netif *net)
     {
         (void)net;
@@ -119,7 +129,12 @@ class PicoENC28J60LwipDriver {
     // the core, so p is one contiguous buffer.
     uint16_t sendFrame(struct pbuf *p)
     {
-        return _eth.sendFrame((const uint8_t *)p->payload, p->len) ? p->len : 0;
+        bool sent = _eth.sendFrame((const uint8_t *)p->payload, p->len);
+        _traffic++;
+        if (_sent) {
+            _sent(_sentArg);
+        }
+        return sent ? p->len : 0;
     }
 
     // Everything below runs from the lwIP polling worker with the lwIP lock
@@ -157,6 +172,7 @@ class PicoENC28J60LwipDriver {
         memcpy(buffer, _frame, n);
         _frameLen = 0;
         _delivered++;
+        _traffic++;
         return n;
     }
 
@@ -164,6 +180,12 @@ class PicoENC28J60LwipDriver {
     uint32_t delivered() const
     {
         return _delivered;
+    }
+
+    //! Frames that went out or came in so far
+    uint32_t traffic() const
+    {
+        return _traffic;
     }
 
     //! More frames may be waiting: lwIP reads a limited number of them at a
@@ -246,9 +268,12 @@ class PicoENC28J60LwipDriver {
     bool _burst =
         false; // inside a run of frames that started with an interrupt
     uint32_t _delivered = 0;
+    uint32_t _traffic = 0;
     uint32_t _lastLinkCheck = 0;
     void (*_wake)(void *) = nullptr;
     void *_wakeArg = nullptr;
+    void (*_sent)(void *) = nullptr;
+    void *_sentArg = nullptr;
 };
 
 /**
@@ -266,6 +291,7 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
         _irq = config.irq_pin >= 0;
         _pollMs = _irq ? 20 : 5;
         setWake(wake, this);
+        setSentHook(sent, this);
     }
 
     //! Start the interface (DHCP unless config() was called first); false if no
@@ -297,6 +323,7 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
         _pollWorker.do_work = poll;
         _pollWorker.user_data = this;
         async_context_add_at_time_worker_in_ms(context, &_pollWorker, _pollMs);
+        _pollQueued = true;
 #endif
         return true;
     }
@@ -305,6 +332,7 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
     {
 #ifndef __FREERTOS
         async_context_t *context = __getEthernetContext();
+        _pollQueued = false;
         async_context_remove_at_time_worker(context, &_pollWorker);
         if (_irq) {
             LwipIntfDev<PicoENC28J60LwipDriver>::end(); // stops the wake-ups
@@ -317,9 +345,10 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
     }
 
     /**
-     * How often to check the chip for frames, in milliseconds. Defaults to 5,
-     * or to 20 with an INT pin, where it only has to catch what the interrupt
-     * missed.
+     * How often to check the chip for frames while the line is quiet, in
+     * milliseconds. Defaults to 5, or to 20 with an INT pin, where it only has
+     * to catch what the interrupt missed. Without an INT pin the chip is looked
+     * at sooner after each frame, see nextPollMs(), whatever this is set to.
      */
     void setPollPeriod(uint32_t ms)
     {
@@ -350,7 +379,54 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
             static_cast<PicoENC28J60lwIP *>(worker->user_data);
         bool more = self->service();
         async_context_add_at_time_worker_in_ms(context, worker,
-                                               more ? 0 : self->_pollMs);
+                                               more ? 0 : self->nextPollMs());
+    }
+
+    // How long to wait before looking at the chip again. Without the INT pin
+    // the peer's answer to a frame that went out, and the next frame of a
+    // burst, are usually about to arrive: after traffic the chip is looked at
+    // every millisecond, then at growing intervals up to the relaxed period
+    // while nothing comes. The peer is served within a millisecond instead of
+    // up to a full period, and an idle line costs no more than before. With a
+    // fixed period, where it happens to fall relative to the answer would
+    // decide whether a reply takes a few milliseconds or a full period more.
+    uint32_t nextPollMs()
+    {
+        if (_irq || _pollMs <= ACTIVE_POLL_MS) {
+            _waitMs = _pollMs;
+        } else if (traffic() != _seenTraffic) {
+            _seenTraffic = traffic();
+            _waitMs = ACTIVE_POLL_MS;
+        } else if (_waitMs < _pollMs) {
+            _waitMs = _waitMs * 2 < _pollMs ? _waitMs * 2 : _pollMs;
+        }
+        return _waitMs;
+    }
+
+    // A frame just went out, so its answer is about to arrive: if the timer is
+    // far off, bring it closer. Called with the lwIP lock held, from user code
+    // or from the worker itself, which is not queued while it runs and
+    // schedules itself when it is done.
+    void pollSoon()
+    {
+        if (_irq || !_pollQueued) {
+            return;
+        }
+        int64_t left =
+            absolute_time_diff_us(get_absolute_time(), _pollWorker.next_time);
+        if (left <= (int64_t)ACTIVE_POLL_MS * 1000) {
+            return;
+        }
+        async_context_t *context = __getEthernetContext();
+        if (async_context_remove_at_time_worker(context, &_pollWorker)) {
+            async_context_add_at_time_worker_in_ms(context, &_pollWorker,
+                                                   ACTIVE_POLL_MS);
+        }
+    }
+
+    static void sent(void *arg)
+    {
+        static_cast<PicoENC28J60lwIP *>(arg)->pollSoon();
     }
 
     // Runs in the lwIP context after the INT pin fell
@@ -375,15 +451,25 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
     // lwIP's handlePackets() hands over this many frames at most per call
     static constexpr uint32_t RX_BURST_LIMIT = 9;
 
+    // The polling period right after traffic; it doubles from there while the
+    // chip has nothing for us, up to the period that was set
+    static constexpr uint32_t ACTIVE_POLL_MS = 1;
+
     async_at_time_worker_t _pollWorker;
     async_when_pending_worker_t _irqWorker;
+    bool _pollQueued = false; // _pollWorker is in the queue of the context
 #else
     static void wake(void *)
+    {
+    }
+    static void sent(void *)
     {
     }
 #endif
     bool _irq = false;
     uint32_t _pollMs = 5;
+    uint32_t _waitMs = 5; // the current polling period, see nextPollMs()
+    uint32_t _seenTraffic = 0;
 };
 
 #endif // PICO_ENC28J60_LWIP_H
