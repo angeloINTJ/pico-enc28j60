@@ -58,7 +58,7 @@ The defaults of `ENC28J60Config`. Every pin can be changed.
 | VCC            | 3V3(OUT)  |                  | the chip is a 3.3 V one |
 | GND            | GND       |                  | |
 
-The library takes one state machine of one PIO block, 18 instructions of its program
+The library takes one state machine of one PIO block, 17 instructions of its program
 memory (the program is loaded once per block and shared), and no DMA channel. The
 hardware SPI is not used, because the commands of the chip are of variable length.
 
@@ -208,6 +208,7 @@ stack serve a frame the moment it arrives, see below.
 | `cs_pin` | 5 | chip select, any GPIO |
 | `rst_pin` | 7 | reset of the chip; -1 for none |
 | `irq_pin` | -1 | the GPIO wired to INT; -1 when it is not wired |
+| `spi_hz` | 10000000 | the SPI clock in Hz, from 100 kHz to 20 MHz, the limit of the chip. The errata ask for 8 MHz or more with the silicon revisions B1 and B4, and the default leaves room above it for the rounding of the divider of the PIO; going faster depends on the wiring. The PIO runs at four times this, so the system clock has to allow it |
 | `mac_addr` | all zeros | the MAC address. Left at zeros, `begin()` makes a locally administered one from the unique ID of the board, so that two boards never share it; `getMACAddress()` says which |
 | `rx_buffer_size` | `0x1000` | bytes of the 8 KB of the chip used for reception, the rest is the transmit area. Rounded down to an even number and kept between `0x0600` and `0x1A00`, so that both hold a full frame |
 | `pio_instance`, `pio_sm` | -1, -1 | the PIO block (0, 1, ...) and the state machine (0-3) to claim; -1 lets the driver take any that is free |
@@ -218,8 +219,9 @@ stack serve a frame the moment it arrives, see below.
  * `bool begin()`, `bool begin(const ENC28J60Config&)` - initialize. Returns `false`
    when it cannot, and can be called again; `lastError()` says why (an `Error` value)
    and `PicoENC28J60::errorString(error)` turns it into text: a pin that is out of
-   range or used twice, a state machine that is taken, no PIO with room for the
-   program, no chip answering, no memory.
+   range or used twice, a buffer or an SPI clock that is out of range, a state
+   machine that is taken, no PIO with room for the program, no chip answering, no
+   memory.
  * `void end()` - stops the chip and gives back the state machine, the four SPI pins
    and the memory; `begin()` starts it again. The destructor calls it. The reset line
    is left high and the INT pin keeps its pull-up.
@@ -333,7 +335,7 @@ Every push is built by the [CI](.github/workflows/ci.yml): `arduino-lint`,
 `clang-format`, a check that the PIO header matches its source, every sketch for four
 boards (the three that can use the INT pin also built with it), the oldest and the
 newest supported cores, and the C driver as a CMake library with the Pico SDK, with
-`-Werror` and, on the driver files, the static analyzer of GCC.
+`-Werror` and, on the driver files, the static analyzer of GCC and `-Wconversion`.
 
 The CI cannot test a network, so `extras/bench` has tests that run against a real
 board and your LAN, driven by Python scripts on the PC:

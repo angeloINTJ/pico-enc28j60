@@ -19,7 +19,7 @@ The base driver uses:
 
  * 4 GPIOs for the SPI link to the device, and one more for the interrupt signal when
    an interrupt callback (`irq_cb`) is given; without one, `irq_pin` is not touched.
- * The SPI GPIOs are driven by a PIO program that is 18 instructions long and uses 1
+ * The SPI GPIOs are driven by a PIO program that is 17 instructions long and uses 1
    state machine, which the driver claims so that other users of the PIO (SerialPIO,
    tone, Servo, ...) are given another one. The hardware SPI is not used because the
    device commands are variable length.
@@ -55,6 +55,9 @@ following fields:
  * mosi_pin - defaults to 17
  * sclk_pin - defaults to 18
  * cs_pin - slave select, defaults to 19
+ * spi_hz - the SPI clock in Hz, from ENC28J60_SPI_HZ_MIN (100 kHz) to ENC28J60_SPI_HZ_MAX
+           (20 MHz, the limit of the chip); 0 or the default is ENC28J60_SPI_HZ_DEFAULT
+           (10 MHz). The PIO runs at four times this, so the system clock has to allow it
  * irq_pin - defaults to 20
  * dma_irq - interrupt channel to handle DMA IRQs, defaults to 0
  * rx_size - the device has 8kB big buffer that is used for RX and TX queues the range

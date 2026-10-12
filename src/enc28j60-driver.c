@@ -54,6 +54,7 @@ enc28j60_config *enc28j60_get_default_config()
     cfg->mosi_pin = 17;
     cfg->sclk_pin = 18;
     cfg->cs_pin = 19; // Separate CS pin
+    cfg->spi_hz = ENC28J60_SPI_HZ_DEFAULT;
     cfg->irq_pin = 20;
 
     // Use half of the buffer as a receive FIFO
@@ -87,7 +88,18 @@ static struct {
     uint offset;
 } spi_program[NUM_PIOS];
 
-//! Do the pins, the buffer and the choice of the state machine make sense?
+// The SPI program takes this many PIO clocks for each clock of the SPI, see
+// enc28j60-spi.pio
+#define SPI_PIO_CLOCKS_PER_BIT 4
+
+//! The SPI clock of a configuration, in Hz
+static uint32_t spi_hz(const enc28j60_config *cfg)
+{
+    return cfg->spi_hz ? cfg->spi_hz : ENC28J60_SPI_HZ_DEFAULT;
+}
+
+//! Do the pins, the buffer, the SPI clock and the choice of the state machine
+//! make sense?
 static enc28j60_status validate_config(const enc28j60_config *cfg)
 {
     // The PIO drives the four SPI lines, which are different GPIOs below 32
@@ -115,6 +127,14 @@ static enc28j60_status validate_config(const enc28j60_config *cfg)
     // its size is even; the rest of the 8 KB is the transmit buffer
     if (cfg->rx_size == 0 || cfg->rx_size % 2 != 0 ||
         cfg->rx_size >= RAM_SIZE) {
+        return ENC28J60_ERR_CONFIG;
+    }
+
+    // The PIO runs at 4 times the SPI clock, which the system clock has to
+    // allow
+    const uint32_t hz = spi_hz(cfg);
+    if (hz < ENC28J60_SPI_HZ_MIN || hz > ENC28J60_SPI_HZ_MAX ||
+        (uint64_t)hz * SPI_PIO_CLOCKS_PER_BIT > clock_get_hz(clk_sys)) {
         return ENC28J60_ERR_CONFIG;
     }
 
@@ -225,11 +245,19 @@ static void start_sm(const enc28j60_config *cfg)
     sm_config_set_out_shift(&c, false, true, 8);
     sm_config_set_in_shift(&c, false, true, 8);
 
-    // The device seems to work reliably at 3.5 MHz SPI clock or lower,
-    // otherwise MAC, MII, and PHY accesses are unreliable. We scale the PIO
-    // clock to 35 MHz because we take 10 PIO cycles for each SPI cycle in the
-    // PIO program.
-    float div = (float)clock_get_hz(clk_sys) / 35000000;
+    // The PIO program takes SPI_PIO_CLOCKS_PER_BIT PIO clocks for each SPI
+    // clock, so the PIO runs at that many times the SPI clock. The chip select
+    // timing of the program is that of the highest clock of the chip, see
+    // enc28j60-spi.pio. The original driver used 3.5 MHz because MAC, MII and
+    // PHY accesses were unreliable above it. Its program let go of the chip
+    // select 143 ns after a read, where the data sheet asks for 210 ns (TCSH)
+    // for the MAC and MII registers, and less at a faster clock.
+    float div = (float)clock_get_hz(clk_sys) /
+                (float)((uint64_t)spi_hz(cfg) * SPI_PIO_CLOCKS_PER_BIT);
+    if (div < 1.0f) {
+        div = 1.0f; // the system clock was lowered after the check: as fast as
+                    // it goes
+    }
     sm_config_set_clkdiv(&c, div);
 
     // Initialize pins to default state: CS high, SCK low, MOSI low
@@ -484,7 +512,8 @@ const char *enc28j60_status_string(enc28j60_status status)
     case ENC28J60_OK:
         return "ok";
     case ENC28J60_ERR_CONFIG:
-        return "invalid configuration: check the pins and the buffer size";
+        return "invalid configuration: check the pins, the buffer size and the "
+               "SPI clock";
     case ENC28J60_ERR_PIO_BUSY:
         return "the PIO state machine is already in use";
     case ENC28J60_ERR_PIO_SPACE:

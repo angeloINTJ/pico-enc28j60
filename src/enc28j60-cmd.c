@@ -12,12 +12,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-// The state machine moves a byte through the FIFOs in about 2.3 us, which is
-// some 15 turns of the loop below. If neither FIFO moves for this many turns,
-// which is thousands of times longer and some milliseconds at any clock, it
-// does not run: another piece of code took it, or it was stopped. The turns are
-// counted rather than timed, so that an interrupt, or the other core locking
-// this one out while it writes to the flash, cannot be taken for a stall.
+// The state machine moves a byte through the FIFOs in 8 clocks of the SPI: 0.8
+// us at 10 MHz, 80 us at 100 kHz, the slowest clock. A turn of the loop below
+// takes about 0.15 us. If neither FIFO moves for this many turns, which are
+// some 7 ms and 90 times the longest byte, the state machine does not run:
+// another piece of code took it, or it was stopped. The turns are counted
+// rather than timed, so that an interrupt, or the other core locking this one
+// out while it writes to the flash, cannot be taken for a stall.
 #define STALL_SPINS 50000
 
 // Don't keep this function in flash

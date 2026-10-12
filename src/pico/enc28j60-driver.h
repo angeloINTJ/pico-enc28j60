@@ -40,6 +40,20 @@ typedef struct {
 //! Let the driver pick any free state machine of the PIO in enc28j60_config.sm
 #define ENC28J60_SM_ANY ((uint) - 1)
 
+//! The SPI clock when enc28j60_config.spi_hz is 0. The errata (issue 1) ask for
+//! 8 MHz or more with the silicon revisions B1 and B4. The PIO divides the
+//! system clock by a fraction, and a period of the SPI clock is a system clock
+//! cycle longer or shorter than the nominal one from time to time (8 ns of 100
+//! at 125 MHz); with 10 MHz every period is still shorter than the 125 ns of 8
+//! MHz, with 8 MHz most of them would not be
+#define ENC28J60_SPI_HZ_DEFAULT 10000000u
+
+//! The fastest SPI clock the chip allows (data sheet, table 16-6)
+#define ENC28J60_SPI_HZ_MAX 20000000u
+
+//! The slowest one that the driver accepts
+#define ENC28J60_SPI_HZ_MIN 100000u
+
 typedef struct {
     //! The PIO block that runs the SPI program, or NULL to let the driver look
     //! for any block that has the room and a free state machine (sm is then
@@ -52,6 +66,12 @@ typedef struct {
     uint mosi_pin;
     uint sclk_pin;
     uint cs_pin; //!< Slave select pin (separate from sclk_pin)
+    //! The SPI clock in Hz, from ENC28J60_SPI_HZ_MIN to ENC28J60_SPI_HZ_MAX;
+    //! 0 stands for ENC28J60_SPI_HZ_DEFAULT. The PIO runs at four times this,
+    //! so the system clock has to allow it. The silicon revisions B1 and B4
+    //! read and write the MAC registers unreliably below 8 MHz (errata, issue
+    //! 1), see ENC28J60_SPI_HZ_DEFAULT.
+    uint32_t spi_hz;
     uint irq_pin;
     uint dma_irq; //!< IRQ channel used to handle DMAs
 

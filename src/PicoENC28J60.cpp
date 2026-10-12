@@ -113,6 +113,11 @@ static bool validConfig(const ENC28J60Config &c)
         return false;
     }
 
+    // The speed of the SPI is checked against the system clock by the driver
+    if (c.spi_hz < ENC28J60_SPI_HZ_MIN || c.spi_hz > ENC28J60_SPI_HZ_MAX) {
+        return false;
+    }
+
     return c.pio_instance >= -1 && c.pio_instance < (int)NUM_PIOS &&
            c.pio_sm >= -1 && c.pio_sm < (int)NUM_PIO_STATE_MACHINES;
 }
@@ -208,6 +213,7 @@ bool PicoENC28J60::begin()
     cfg->mosi_pin = _config.mosi_pin;
     cfg->sclk_pin = _config.sclk_pin;
     cfg->cs_pin = _config.cs_pin;
+    cfg->spi_hz = _config.spi_hz;
     cfg->dma_irq = 0;
     cfg->rx_size = _config.rx_buffer_size;
     memcpy(cfg->mac_addr, _config.mac_addr, 6);

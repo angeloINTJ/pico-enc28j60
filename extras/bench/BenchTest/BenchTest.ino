@@ -489,13 +489,14 @@ static void printInfo()
     int sm = h ? (int)h->cfg->sm : -1;
     Serial.printf("INFO init=%d rev=0x%02X mac=%02x:%02x:%02x:%02x:%02x:%02x link=%d ip=%u.%u.%u.%u pend=%u "
                   "probe_ok=%d probe_ms=%lu probe_err=%s irqpin=%d pio=%d sm=%d claimed=%d "
-                  "cfg_rejected=%d cfg_tried=%d cfg_us=%lu pioful_filled=%d pioful_ok=%d pioful_ms=%lu pioful_err=%s err=%s\n",
+                  "cfg_rejected=%d cfg_tried=%d cfg_us=%lu pioful_filled=%d pioful_ok=%d pioful_ms=%lu pioful_err=%s err=%s "
+                  "spihz=%lu\n",
                   eth.isInitialized(), eth.getRevision(), m[0], m[1], m[2], m[3], m[4], m[5],
                   eth.linkStatus(), myIp[0], myIp[1], myIp[2], myIp[3], eth.available(), probeOk,
                   (unsigned long)probeMs, errName(probeErr), irqPin(), pio, sm,
                   h ? pio_sm_is_claimed(h->cfg->pio, h->cfg->sm) : 0, cfgRejected, cfgTried,
                   (unsigned long)cfgMaxUs, pioFilled, pioFullOk, (unsigned long)pioFullMs, errName(pioFullErr),
-                  errName(eth.lastError()));
+                  errName(eth.lastError()), h ? (unsigned long)h->cfg->spi_hz : 0UL);
 }
 
 static void printStats()
@@ -755,6 +756,76 @@ static void cmdSetMac(const char* args)
                   memcmp(hw, mac, 6) == 0, hw[0], hw[1], hw[2], hw[3], hw[4], hw[5]);
 }
 
+// SPITEST <Hz> <rounds>: begin() again with that SPI clock, and move data through every kind of access the driver
+// makes: an ETH register, the MAC registers, PHY registers through the MII interface, and the buffer memory. What
+// comes back is compared with what was sent, or with what the chip holds as a constant (the PHY identifier). Then
+// the time of a frame's worth of reads and of a register read. The default configuration is back afterwards.
+static void cmdSpiTest(uint32_t hz, uint32_t rounds)
+{
+    static const uint8_t MAADR[6] = {MAADR1, MAADR2, MAADR3, MAADR4, MAADR5, MAADR6};
+    eth.end();
+    ENC28J60Config c = makeConfig();
+    c.spi_hz = hz;
+    bool began = eth.begin(c);
+    uint32_t errEth = 0, errMac = 0, errMii = 0, errMem = 0, frameUs = 0, regUs = 0;
+    uint16_t phid1 = 0, phid2 = 0;
+    if (began) {
+        enc28j60* h = driverHandle();
+        uint32_t rng = 0x2545F491u ^ hz;
+        auto next = [&rng]() {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            return rng;
+        };
+        phid1 = reg_read_p_blk(h, PHID1);
+        phid2 = reg_read_p_blk(h, PHID2);
+        for (uint32_t i = 0; i < rounds; i++) {
+            uint8_t v = (uint8_t)next();
+            bank_set_blk(h, 1);  // EPMM0, a pattern match mask that the driver does not use
+            reg_write_blk(h, EPMM0, v);
+            if (reg_read_e_blk(h, EPMM0) != v) errEth++;
+
+            uint8_t m[6];
+            bank_set_blk(h, 3);  // MAC registers: reading them takes a dummy byte and the longest CS hold
+            for (int k = 0; k < 6; k++) {
+                m[k] = (uint8_t)next();
+                reg_write_blk(h, MAADR[k], m[k]);
+            }
+            for (int k = 0; k < 6; k++) {
+                if (reg_read_m_blk(h, MAADR[k]) != m[k]) errMac++;
+            }
+
+            if (reg_read_p_blk(h, PHID1) != phid1 || reg_read_p_blk(h, PHID2) != phid2) errMii++;
+
+            uint8_t out[30], back[30];
+            for (int k = 0; k < 30; k++) out[k] = (uint8_t)next();
+            uint16_t addr = 0x1800 + (i % 8) * 32;  // in the transmit area, which nothing uses here
+            mem_write_at_blk(h, addr, sizeof(out), out);
+            mem_read_at_blk(h, addr, sizeof(back), back);
+            if (memcmp(out, back, sizeof(out)) != 0) errMem++;
+        }
+        // what a received frame costs: 49 reads of 31 bytes make 1519 bytes. And one register read.
+        uint8_t sink[31];
+        bank_set_blk(h, 0);
+        uint32_t t0 = micros();
+        for (int k = 0; k < 49; k++) mem_read_blk(h, sizeof(sink), sink);
+        frameUs = micros() - t0;
+        t0 = micros();
+        for (int k = 0; k < 100; k++) (void)reg_read_e_blk(h, ESTAT);
+        regUs = (micros() - t0) / 100;
+    }
+    uint32_t io = eth.stats().io_errors;
+    const char* err = errName(eth.lastError());
+    eth.end();
+    bool restored = eth.begin(makeConfig());  // the MAC address and the registers the test used start over
+    Serial.printf("SPITEST hz=%lu began=%d err=%s rounds=%lu eth=%lu mac=%lu mii=%lu mem=%lu phid1=0x%04X phid2=0x%04X "
+                  "frame_us=%lu reg_us=%lu io=%lu restored=%d\n",
+                  (unsigned long)hz, began, err, (unsigned long)rounds, (unsigned long)errEth, (unsigned long)errMac,
+                  (unsigned long)errMii, (unsigned long)errMem, phid1, phid2, (unsigned long)frameUs,
+                  (unsigned long)regUs, (unsigned long)io, restored);
+}
+
 // TSV <length> <broadcast 0/1>: send one frame through the C driver and read its transmit status vector.
 static void cmdTsv(uint16_t len, bool broadcast)
 {
@@ -833,6 +904,8 @@ static void handleCommand(char* line)
         cmdLinkEvent();
     } else if (strncmp(line, "SETMAC ", 7) == 0) {
         cmdSetMac(line + 7);
+    } else if (sscanf(line, "SPITEST %lu %lu", &g, &n) == 2) {
+        cmdSpiTest(g, n);
     } else if (sscanf(line, "TXMIX %u %lu", &a, &n) == 2) {
         cmdTxMix(a, n);
     } else if (sscanf(line, "TSV %u %u", &a, &b) == 2) {

@@ -57,6 +57,15 @@ struct ENC28J60Config {
     // so that both areas hold a full frame.
     uint16_t rx_buffer_size = 0x1000;
 
+    // SPI clock in Hz, from 100 kHz to 20 MHz, which is the limit of the chip.
+    // The errata ask for 8 MHz or more with the silicon revisions B1 and B4
+    // (below it they read and write the MAC registers unreliably); the default
+    // is 10 MHz because the PIO divides the system clock by a fraction, and
+    // some periods of an 8 MHz clock would be longer than 125 ns. Going
+    // faster depends on the wiring. The PIO runs at four times this, so the
+    // system clock must be at least that.
+    uint32_t spi_hz = 10000000;
+
     // PIO configuration. The state machine is claimed, so the Arduino core and
     // other libraries that use the PIO keep away from it. Leave both at -1 and
     // the driver takes any state machine that is free.
@@ -92,8 +101,9 @@ class PicoENC28J60 {
     //! Why begin() failed
     enum class Error : uint8_t {
         None = 0, //!< begin() worked
-        Config, //!< a pin is out of range or used twice, or the PIO choice is
-                //!< not valid
+        Config, //!< a pin is out of range or used twice, the buffer size or
+                //!< the SPI clock is out of range, or the PIO choice is not
+                //!< valid
         PioBusy, //!< the state machine chosen in the configuration is in use
         PioSpace, //!< no PIO has the room for the SPI program and a free state
                   //!< machine
@@ -226,8 +236,8 @@ class PicoENC28J60 {
      * With the pin wired this costs no SPI traffic: it looks at the INT line,
      * so a loop that finds nothing to do leaves the chip alone. It stays true
      * while the line is low, so an event cannot be missed even if its edge was.
-     * Without irq_pin it looks at the chip's flags instead (one SPI read), so
-     * the same loop works on a board that has no INT wire.
+     * Without irq_pin it looks at the chip's flags instead (four short SPI
+     * commands), so the same loop works on a board that has no INT wire.
      *
      * The chip raises the line for a received frame, a link change and a
      * receive overflow. It does not for a finished transmission, because
@@ -307,8 +317,9 @@ class PicoENC28J60 {
      * @brief Run the interrupt callback from loop() when there is no INT wire
      *
      * Calls the function given to setInterruptCallback() when
-     * interruptPending() says so, which costs one SPI read. It does nothing
-     * when irq_pin is set, because then the pin calls the function itself.
+     * interruptPending() says so, which costs four short SPI commands. It does
+     * nothing when irq_pin is set, because then the pin calls the function
+     * itself.
      */
     void poll();
 

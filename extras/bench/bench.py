@@ -46,9 +46,10 @@ SKETCH = os.path.join(REPO, "extras", "bench", "BenchTest")
 PICO_MAC = "02:50:49:43:4f:01"
 PORT_RX, PORT_ECHO, PORT_TX, PEER_PORT = 9999, 9997, 9998, 9998
 SIZES = [10, 18, 100, 400, 800, 1200, 1472]  # UDP payload sizes
-ALL_TESTS = ["init", "cfgerr", "pioful", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong",
+ALL_TESTS = ["init", "cfgerr", "pioful", "spi", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong",
              "txbburst", "soak", "rxflood", "discard", "callback", "linkflag", "setmac", "txstat", "pioshare",
              "stall", "lifecycle", "txmix", "lostchip"]
+SPI_SPEEDS = [1000000, 3500000, 8000000, 10000000, 12500000, 16000000, 20000000]  # Hz, for the spi test
 IRQ_TESTS = ["irqidle", "irqedge", "irqlink"]  # only with --irq
 results = []
 
@@ -431,6 +432,32 @@ def wait_link(p, timeout=25):
     return False
 
 
+def t_spi(p, ip, assert_up_to, rounds=2000):
+    """Data through every kind of access at several SPI clocks. What the wiring can carry is not up to the
+    library, so only the clocks up to --spi-assert-mhz have to be clean; the faster ones are reported."""
+    ok, notes = True, []
+    default_hz = num(kv(p.cmd("INFO", "INFO")), "spihz")
+    for hz in SPI_SPEEDS:
+        t = kv(p.cmd("SPITEST %d %d" % (hz, rounds), "SPITEST", 90))
+        errors = sum(num(t, k) for k in ("eth", "mac", "mii", "mem"))
+        clean = num(t, "began") == 1 and errors == 0 and num(t, "phid1") == 0x0083 and num(t, "io") == 0
+        line = "%5.2f MHz: %s; frame read %.2f ms (49 x 31 bytes), register read %s us" % (
+            hz / 1e6, "clean" if clean else ("did not start (%s)" % t.get("err") if num(t, "began") == 0 else
+                                              "%d errors (eth %s, mac %s, mii %s, memory %s)" % (
+                                                  errors, t["eth"], t["mac"], t["mii"], t["mem"])),
+            num(t, "frame_us") / 1000.0, t["reg_us"])
+        if hz <= assert_up_to:
+            ok = ok and clean and num(t, "restored") == 1
+            notes.append(line)
+        else:
+            info("spi", line + " (above --spi-assert-mhz: not a failure)")
+    link = wait_link(p)
+    replies = ping_replies(ip) if link else 0
+    ok = ok and link and replies == 5 and default_hz == 8000000
+    record("spi", ok, "default clock %.1f MHz; %s; link %s, ping %d/5" %
+           (default_hz / 1e6, "; ".join(notes), "up" if link else "DOWN", replies))
+
+
 def t_discard(p, host_ip, irq, count=9):
     """Frames wait in the receive buffer while the board does not serve the chip. hasPacket(), available() and
     peekInterruptFlags() have to say so, discardFrame() has to drop one frame unseen without disturbing the
@@ -724,6 +751,8 @@ def main():
     ap.add_argument("--flash", action="store_true", help="compile and upload BenchTest first")
     ap.add_argument("--irq", type=int, metavar="GPIO", help="the board is the interrupt build, INT wired to this GPIO")
     ap.add_argument("--alt-ip", help="a second free IPv4 address, for the setmac test (default: --ip plus two)")
+    ap.add_argument("--spi-assert-mhz", type=float, default=10.0,
+                    help="the spi test fails if a clock up to this many MHz is not clean (default 10)")
     ap.add_argument("--tests", help="comma separated; default: all")
     args = ap.parse_args()
     if args.tests is None:
@@ -747,6 +776,8 @@ def main():
             t_cfgerr(p)
         if "pioful" in wanted:
             t_pioful(p)
+        if "spi" in wanted:
+            t_spi(p, args.ip, args.spi_assert_mhz * 1e6)
         if "ping" in wanted:
             t_ping(p, args.ip)
         if "rx" in wanted:

@@ -60,11 +60,15 @@ Changes to Lukasz's files, which keep his copyright notice and carry a
 
 * `src/enc28j60-spi.pio`: the slave select is driven with `set` instead of being
   the second side-set pin. In the original it had to be the pin next to the clock;
-  now SCK and CS can be any GPIO. Typos fixed.
-* `src/pico/enc28j60-driver.h`: `cs_pin` in the configuration, and the
+  now SCK and CS can be any GPIO. Each SPI clock takes 4 PIO clocks, not 10, and the
+  program keeps the chip select times of the data sheet (TCSS, TCSH, TCSD) at any
+  clock up to 20 MHz. Typos fixed.
+* `src/pico/enc28j60-driver.h`: `cs_pin` and `spi_hz` in the configuration, and the
   declarations of the functions added to the driver.
 * `src/enc28j60-driver.c`:
   * the separate chip select pin;
+  * the SPI clock is a setting (`spi_hz`, 10 MHz by default, up to 20 MHz) where it was
+    fixed at 3.5 MHz;
   * `enc28j60_init()` gives up instead of hanging when no chip answers (the
     oscillator-ready wait is bounded and the revision ID is checked) and returns
     `NULL`; `enc28j60_init_status()` also says why it failed, after checking the
