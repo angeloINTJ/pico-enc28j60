@@ -46,9 +46,11 @@ struct ENC28J60Config {
     // so that both areas hold a full frame.
     uint16_t rx_buffer_size = 0x1000;
 
-    // PIO configuration
-    uint8_t pio_instance = 0; // 0 = pio0, 1 = pio1
-    uint8_t pio_sm = 0; // State machine index (0-3)
+    // PIO configuration. The state machine is claimed, so the Arduino core and
+    // other libraries that use the PIO keep away from it. Leave both at -1 and
+    // the driver takes any state machine that is free.
+    int8_t pio_instance = -1; // 0 = pio0, 1 = pio1, ... -1 = any
+    int8_t pio_sm = -1; // State machine index (0-3), -1 = any
 
     ENC28J60Config()
     {
@@ -76,21 +78,53 @@ class PicoENC28J60 {
 
     ~PicoENC28J60();
 
+    //! Why begin() failed
+    enum class Error : uint8_t {
+        None = 0, //!< begin() worked
+        Config, //!< a pin is out of range or used twice, or the PIO choice is
+                //!< not valid
+        PioBusy, //!< the state machine chosen in the configuration is in use
+        PioSpace, //!< no PIO has the room for the SPI program and a free state
+                  //!< machine
+        NoChip, //!< no ENC28J60 answers: check the wiring and the 3.3 V supply
+        NoMemory, //!< out of memory
+        Io //!< the PIO state machine did not run
+    };
+
     /**
      * @brief Initialize the ENC28J60 with the configuration given to the
      * constructor
-     * @return true on success; false if no ENC28J60 answers (check the wiring
-     * and the 3.3 V supply). It is safe to call begin() again after a failure.
-     *         The Ethernet link comes up a second or two later, see
-     * linkStatus().
+     * @return true on success; false if it could not be done, and lastError()
+     *         says why: the configuration, the PIO, or no chip that answers
+     *         (check the wiring and the 3.3 V supply). It is safe to call
+     *         begin() again after a failure. The Ethernet link comes up a
+     *         second or two later, see linkStatus().
      */
     bool begin();
+
+    //! Why the last begin() failed; Error::None after one that worked
+    Error lastError() const
+    {
+        return _error;
+    }
+
+    //! A sentence that tells what an Error means
+    static const char *errorString(Error error);
+
+    /**
+     * @brief Stop the chip and give back the PIO state machine and the pins
+     *
+     * The destructor does it too. Afterwards begin() starts it again, with a
+     * new configuration if you pass one.
+     */
+    void end();
 
     /**
      * @brief Initialize the ENC28J60 with a new configuration
      *
      * Convenient for global objects: construct with the defaults and configure
-     * in setup(). Ignored if the driver is already initialized.
+     * in setup(). Ignored if the driver is already initialized; call end()
+     * first to change the configuration.
      */
     bool begin(const ENC28J60Config &config);
 
@@ -203,7 +237,10 @@ class PicoENC28J60 {
     uint8_t peekInterruptFlags();
 
     //! A frame is waiting in the receive buffer (only looks: the INT pin is not
-    //! masked)
+    //! masked). It asks the packet counter of the chip, because the flag of
+    //! the chip is not reliable (silicon errata, issue 6): INT_PACKET_RX in
+    //! the flags of getInterruptFlags() and peekInterruptFlags() is the same
+    //! answer.
     bool hasPacket();
 
     //! A transmission completed (only looks; sendFrame() clears the flag when
@@ -272,6 +309,10 @@ class PicoENC28J60 {
                             //!< frame header
         uint32_t tx_frames; //!< frames sent
         uint32_t tx_failures; //!< sendFrame() calls that failed
+        uint32_t tx_aborts; //!< frames the MAC gave up on, after the retries
+        uint32_t tx_retries; //!< frames sent again after a late collision
+        uint32_t io_errors; //!< times the PIO state machine did not run
+        uint32_t recoveries; //!< times the chip was started over after one
     };
     const Stats &stats() const
     {
@@ -299,7 +340,12 @@ class PicoENC28J60 {
   private:
     ENC28J60Config _config;
     void *_eth; // internal driver handle
+    void *_cfg; // configuration of the driver, owned by this object
     bool _initialized;
+    Error _error = Error::None;
+    bool _ioCounted = false; // the failure that is being dealt with is counted
+    bool _recoverWait = false; // a recovery failed: wait until _recoverAt
+    uint32_t _recoverAt = 0; // millis(): do not try to recover before this
     bool _irq_attached = false;
     volatile bool _irq_pending = false;
     volatile uint32_t _irq_count = 0;
@@ -308,6 +354,9 @@ class PicoENC28J60 {
     Stats _stats = {};
 
     void _hardwareReset();
+    void _enableChipInterrupts();
+    bool _usable();
+    bool _failed() const;
     bool _readRxInfo(uint32_t *rx_info);
     static void _staticIRQHandler(void *data);
 

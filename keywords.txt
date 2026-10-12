@@ -6,11 +6,15 @@
 #######################################
 PicoENC28J60	KEYWORD1
 ENC28J60Config	KEYWORD1
+Error	KEYWORD1
 PicoENC28J60lwIP	KEYWORD1
 #######################################
 # Methods and Functions (KEYWORD2)
 #######################################
 begin	KEYWORD2
+end	KEYWORD2
+lastError	KEYWORD2
+errorString	KEYWORD2
 linkStatus	KEYWORD2
 getRevision	KEYWORD2
 getMACAddress	KEYWORD2

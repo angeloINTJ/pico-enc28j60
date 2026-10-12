@@ -99,11 +99,20 @@ class PicoENC28J60LwipDriver {
         return true;
     }
 
-    // The driver cannot be torn down, see PicoENC28J60::~PicoENC28J60(); it
-    // can be told to stop waking anybody up.
+    // Stops waking anybody up, releases the PIO state machine and the pins
     void end()
     {
         _eth.setInterruptCallback(nullptr, nullptr);
+        _eth.end();
+        _frameLen = 0;
+        _burst = false;
+        _linked = false;
+    }
+
+    //! Why begin() failed, see PicoENC28J60::lastError()
+    PicoENC28J60::Error lastError() const
+    {
+        return _eth.lastError();
     }
 
     // Called by lwIP with its lock held. LWIP_NETIF_TX_SINGLE_PBUF is set in
