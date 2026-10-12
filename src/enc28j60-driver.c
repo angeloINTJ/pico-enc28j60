@@ -413,11 +413,14 @@ static bool initialize_enc28j60(enc28j60 *eth, enc28j60_config *cfg)
     // Disable the half-duplex loopback
     reg_write_p_blk(eth, PHCON2, HDLDIS);
 
-    // Set up the interrupt: zero all flags, set enables
+    // Set up the interrupt: zero all flags, set enables. TXERIE as well as
+    // TXIE: the end of a frame that was aborted may only raise TXERIF (silicon
+    // errata, issue 13).
     if (cfg->irq_cb) {
         reg_write_p_blk(eth, PHIE, PGEIE | PLNKIE);
         reg_write_blk(eth, EIR, 0);
-        reg_write_blk(eth, EIE, INTIE | PKTIE | LINKIE | TXIE | RXERIE);
+        reg_write_blk(eth, EIE,
+                      INTIE | PKTIE | LINKIE | TXIE | TXERIE | RXERIE);
     }
 
     // Enable the receiver
@@ -645,7 +648,14 @@ bool enc28j60_irq_is_link(uint8_t flags)
 
 bool enc28j60_irq_is_tx(uint8_t flags)
 {
-    return flags & TXIF;
+    // A frame the MAC gave up on after a late collision may raise TXERIF
+    // without TXIF (silicon errata, issue 13): either one ends the request
+    return flags & (TXIF | TXERIF);
+}
+
+bool enc28j60_irq_is_tx_err(uint8_t flags)
+{
+    return flags & TXERIF;
 }
 
 bool enc28j60_irq_is_rx(uint8_t flags)
@@ -800,8 +810,18 @@ void enc28j60_frame_tx(enc28j60 *eth, uint32_t frame_id)
 
     enc28j60_cmd_buf_reset(eth);
 
+    // Register bank 0, and the request of the frame before withdrawn: after a
+    // late collision the transmit logic may keep TXRTS set without raising TXIF
+    // (silicon errata, issue 13), and setting it again would then start nothing
+    enc28j60_cmd_buf_encode_cmd(eth, BFC_CMD(ECON1, TXRTS | 0x3), NULL);
+
+    // Silicon errata, issue 12: an abort can leave the transmit logic stuck, so
+    // it is reset before every frame; the reset may raise TXERIF, cleared after
+    enc28j60_cmd_buf_encode_cmd(eth, BFS_CMD(ECON1, TXRST), NULL);
+    enc28j60_cmd_buf_encode_cmd(eth, BFC_CMD(ECON1, TXRST), NULL);
+    enc28j60_cmd_buf_encode_cmd(eth, BFC_CMD(EIR, TXERIF | TXIF), NULL);
+
     // Set the pointers
-    enc28j60_cmd_buf_encode_cmd(eth, BFC_CMD(ECON1, 0x3), NULL);
     enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ETXSTL, start), NULL);
     enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ETXSTH, start >> 8), NULL);
     enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ETXNDL, end), NULL);

@@ -1096,8 +1096,9 @@ static void cmdAsyncOn()
         eth.begin(makeConfig());  // the class has the chip again
         return;
     }
-    // The interrupt sources that the FreeRTOS driver enables; without irq_cb the C driver leaves them all off
-    enc28j60_irq_enable_blk(ah, PKTIE | LINKIE | TXIE | RXERIE);
+    // The interrupt sources that the FreeRTOS driver enables (initialize_enc28j60() with irq_cb); without irq_cb the
+    // C driver leaves them all off
+    enc28j60_irq_enable_blk(ah, PKTIE | LINKIE | TXIE | TXERIE | RXERIE);
     uploadedId = txInProgress = ENC28J60_INVALID_FRAME_ID;
     notified = false;
     check = false;

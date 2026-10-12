@@ -163,16 +163,23 @@ uint8_t enc28j60_irq_status_blk(enc28j60 *eth);
 
 //! Program which events drive the INT pin, for code that routes the GPIO
 //! interrupt itself instead of passing irq_cb to enc28j60_init(). `sources` is
-//! a mix of the EIE bits PKTIE (0x40), LINKIE (0x10), TXIE (0x08) and RXERIE
-//! (0x01); pending flags are cleared first, and 0 turns the pin off. The
-//! function sets INTIE itself.
+//! a mix of the EIE bits PKTIE (0x40), LINKIE (0x10), TXIE (0x08), TXERIE
+//! (0x02) and RXERIE (0x01); pending flags are cleared first, and 0 turns the
+//! pin off. The function sets INTIE itself.
 void enc28j60_irq_enable_blk(enc28j60 *eth, uint8_t sources);
 
 //! Check if the interrupt is the link interrput
 bool enc28j60_irq_is_link(uint8_t flags);
 
-//! Check if the interrupt is the transmit interrupt
+//! Has the transmission of the frame ended, sent (TXIF) or given up on
+//! (TXERIF)? After a late collision the chip may raise TXERIF alone (silicon
+//! errata, issue 13), so both flags count.
 bool enc28j60_irq_is_tx(uint8_t flags);
+
+//! Was the transmission of the frame aborted (TXERIF)? The MAC does not retry
+//! a frame after a late collision; enc28j60_tx_status_blk() tells whether that
+//! is what happened.
+bool enc28j60_irq_is_tx_err(uint8_t flags);
 
 //! Check if the interrupt is the receive interrupt
 bool enc28j60_irq_is_rx(uint8_t flags);
@@ -194,7 +201,11 @@ uint32_t enc28j60_frame_upload(enc28j60 *eth, size_t size, const void *data);
 uint32_t enc28j60_frame_upload_blk(enc28j60 *eth, size_t size,
                                    const void *data);
 
-//! Transmit a frame
+//! Transmit a frame. The asynchronous version resets the transmit logic first
+//! (silicon errata, issue 12), which also stops a transmission still going on,
+//! so call it when the previous one has ended (enc28j60_irq_is_tx()). The
+//! blocking version is used with enc28j60_frame_tx_wait_blk() or through
+//! enc28j60_frame_send_blk().
 void enc28j60_frame_tx(enc28j60 *eth, uint32_t frame_id);
 void enc28j60_frame_tx_blk(enc28j60 *eth, uint32_t frame_id);
 

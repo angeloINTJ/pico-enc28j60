@@ -211,6 +211,9 @@
 // EIE: Transmit enable
 #define TXIE 0x8
 
+// EIE: Transmit error enable
+#define TXERIE 0x2
+
 // EIE: Receive error enable
 #define RXERIE 0x1
 
