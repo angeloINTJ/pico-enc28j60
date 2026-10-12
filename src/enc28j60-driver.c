@@ -499,6 +499,11 @@ const char *enc28j60_status_string(enc28j60_status status)
     return "unknown error";
 }
 
+bool enc28j60_alive_blk(enc28j60 *eth)
+{
+    return (reg_read_e_blk(eth, ECON1) & RXEN) != 0;
+}
+
 uint8_t enc28j60_revision_blk(enc28j60 *eth)
 {
     bank_set_blk(eth, 3);

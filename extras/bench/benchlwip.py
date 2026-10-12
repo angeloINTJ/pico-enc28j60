@@ -31,8 +31,8 @@ from bench import Pico, REPO, find_port, flash, info, kv, local_ip_for, num, rec
 
 SKETCH = os.path.join(REPO, "extras", "bench", "BenchLwip")
 PORT_TCP_ECHO, PORT_UDP_ECHO = 7007, 7008
-ALL_TESTS = ["dhcp", "ping", "tcp", "tcppar", "tcpcycle", "udp", "pingout", "client", "udpsend", "dns",
-             "flap", "static", "lifecycle", "heap"]
+ALL_TESTS = ["dhcp", "ping", "tcp", "tcppar", "tcpcycle", "udp", "pingout", "client", "udpsend", "chain", "dns",
+             "flap", "lostchip", "static", "lifecycle", "heap"]
 
 
 # --- patterns shared with BenchLwip.ino -------------------------------------
@@ -357,6 +357,65 @@ def t_udpsend(c):
            "the board sent %s datagrams of %d bytes: %d arrived, %d corrupted" % (t.get("sent", "?"), size, len(seen), bad))
 
 
+def t_chain(c):
+    count = 20
+    sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sk.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sk.bind(("", 0))
+    sk.settimeout(0.5)
+    port = sk.getsockname()[1]
+    seen, bad = set(), 0
+    stop = threading.Event()
+
+    def receive():
+        nonlocal bad
+        while not stop.is_set():
+            try:
+                data, _ = sk.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            if len(data) != 300 or data[:4] != b"CHAN":
+                bad += 1
+                continue
+            i = int.from_bytes(data[4:8], "big")
+            if any(data[j] != (i * 7 + j) & 0xFF for j in range(8, 300)):
+                bad += 1
+            else:
+                seen.add(i)
+
+    th = threading.Thread(target=receive)
+    th.start()
+    t = kv(c.p.cmd("CHAIN %d %d" % (port, count), "CHAIN", 30))
+    time.sleep(0.7)
+    stop.set()
+    th.join(2)
+    sk.close()
+    record("chain", t.get("ok") == "1" and len(seen) == count and bad == 0,
+           "%s datagrams sent as chains of three buffers: %d arrived whole, %d corrupted" %
+           (t.get("sent", "?"), len(seen), bad))
+
+
+def t_lostchip(c):
+    t = kv(c.p.cmd("LOSTCHIP", "LOSTCHIP", 40))
+    sent = got = 0
+    echo_ok = False
+    link_ok = False
+    deadline = time.time() + 30
+    while time.time() < deadline:  # the link goes down with the reset and takes a while to come back
+        sent, got = host_ping(c.board_ip, 3)
+        if got == sent:
+            link_ok = True
+            break
+    if link_ok:
+        echo_ok = tcp_echo(c.board_ip, 20000, 9)[0]
+    record("lostchip", num(t, "found") == 1 and num(t, "alive") == 1 and num(t, "resets") == 1 and link_ok and echo_ok,
+           "the chip was reset behind the back of the interface: it noticed after %s ms and configured it again "
+           "(resets counted %s); then ping %s, TCP echo %s" %
+           (t["found_ms"], t["resets"], "ok" if link_ok else "FAILED", "ok" if echo_ok else "FAILED"))
+
+
 def t_dns(c):
     name = c.args.dns_name or "example.com"
     t = kv(c.p.cmd("DNS " + name, "DNS", 30))
@@ -433,7 +492,8 @@ def t_heap(c):
 
 TESTS = {
     "dhcp": t_dhcp, "ping": t_ping, "tcp": t_tcp, "tcppar": t_tcppar, "tcpcycle": t_tcpcycle, "udp": t_udp,
-    "pingout": t_pingout, "client": t_client, "udpsend": t_udpsend, "dns": t_dns, "flap": t_flap,
+    "pingout": t_pingout, "client": t_client, "udpsend": t_udpsend, "chain": t_chain, "dns": t_dns, "flap": t_flap,
+    "lostchip": t_lostchip,
     "static": t_static, "lifecycle": t_lifecycle, "heap": t_heap,
 }
 

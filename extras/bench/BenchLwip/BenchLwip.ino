@@ -24,6 +24,8 @@
  *   DNS <name>                      resolve a name
  *   FLAP                            power the PHY down and up, as if the cable
  *                                   was pulled out and put back
+ *   CHAIN <port> <n>                broadcast <n> UDP datagrams sent as chains of pbufs
+ *   LOSTCHIP                        reset the chip behind the back of the interface
  *   DIAG                            registers of the chip and pointers of the driver
  *   RESET                           zero the counters of the echo servers
  *
@@ -503,6 +505,132 @@ static void cmdFlap()
         (unsigned long)dhcpXid(), ipText(eth.localIP()).c_str());
 }
 
+// CHAIN <port> <count>: broadcast UDP datagrams, sent as chains of three pbufs straight to the interface. lwIP
+// hands over a single buffer, because the core asks it to, but the interface does not depend on that.
+static uint16_t ipChecksum(const uint8_t* p, size_t n)
+{
+    uint32_t sum = 0;
+    for (size_t i = 0; i + 1 < n; i += 2) {
+        sum += (p[i] << 8) | p[i + 1];
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    return ~sum;
+}
+
+static void cmdChain(char* args)
+{
+    char* a = strtok(args, " ");
+    char* b = strtok(nullptr, " ");
+    if (!a || !b) {
+        Serial.println("CHAIN ok=0 err=args");
+        return;
+    }
+    uint16_t port = atoi(a);
+    uint32_t count = strtoul(b, nullptr, 10);
+    const uint16_t PAYLOAD = 300;
+    const uint16_t HEADERS = 14 + 20 + 8;
+    static uint8_t frame[HEADERS + PAYLOAD];
+    uint32_t sent = 0, failed = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        memset(frame, 0xFF, 6);  // broadcast
+        memcpy(frame + 6, eth.getNetIf()->hwaddr, 6);
+        frame[12] = 0x08;
+        frame[13] = 0x00;
+        uint8_t* ip = frame + 14;
+        ip[0] = 0x45;
+        ip[1] = 0;
+        ip[2] = (20 + 8 + PAYLOAD) >> 8;
+        ip[3] = (20 + 8 + PAYLOAD) & 0xFF;
+        ip[4] = i >> 8;
+        ip[5] = i;
+        ip[6] = ip[7] = 0;
+        ip[8] = 64;
+        ip[9] = 17;
+        ip[10] = ip[11] = 0;
+        uint32_t src = (uint32_t)eth.localIP();
+        memcpy(ip + 12, &src, 4);
+        memset(ip + 16, 0xFF, 4);
+        uint16_t sum = ipChecksum(ip, 20);
+        ip[10] = sum >> 8;
+        ip[11] = sum & 0xFF;
+        uint8_t* udp = ip + 20;
+        udp[0] = PORT_UDP_ECHO >> 8;
+        udp[1] = PORT_UDP_ECHO & 0xFF;
+        udp[2] = port >> 8;
+        udp[3] = port & 0xFF;
+        udp[4] = (8 + PAYLOAD) >> 8;
+        udp[5] = (8 + PAYLOAD) & 0xFF;
+        udp[6] = udp[7] = 0;  // no checksum
+        uint8_t* data = udp + 8;
+        memcpy(data, "CHAN", 4);
+        data[4] = i >> 24;
+        data[5] = i >> 16;
+        data[6] = i >> 8;
+        data[7] = i;
+        for (uint16_t j = 8; j < PAYLOAD; j++) {
+            data[j] = (uint8_t)(i * 7 + j);
+        }
+
+        // three pieces: part of the headers, the rest of them with some data, the rest of the data
+        pbuf* p1 = pbuf_alloc(PBUF_RAW, 20, PBUF_RAM);
+        pbuf* p2 = pbuf_alloc(PBUF_RAW, 100, PBUF_RAM);
+        pbuf* p3 = pbuf_alloc(PBUF_RAW, HEADERS + PAYLOAD - 120, PBUF_RAM);
+        if (!p1 || !p2 || !p3) {
+            pbuf_free(p1);
+            pbuf_free(p2);
+            pbuf_free(p3);
+            failed++;
+            continue;
+        }
+        pbuf_take(p1, frame, 20);
+        pbuf_take(p2, frame + 20, 100);
+        pbuf_take(p3, frame + 120, HEADERS + PAYLOAD - 120);
+        pbuf_cat(p1, p2);
+        pbuf_cat(p1, p3);
+        uint16_t r;
+        {
+            LWIPMutex m;
+            r = eth.sendFrame(p1);
+        }
+        if (r != 0) {
+            sent++;
+        } else {
+            failed++;
+        }
+        pbuf_free(p1);  // frees the whole chain
+        delay(5);
+    }
+    Serial.printf("CHAIN ok=%d sent=%lu failed=%lu\n", failed == 0, (unsigned long)sent, (unsigned long)failed);
+}
+
+// LOSTCHIP: reset the chip behind the back of the interface, as a glitch of its supply would. The interface
+// has to find out by itself, which takes up to a second, and bring the chip back.
+static void cmdLostChip()
+{
+    enc28j60* drv = static_cast<enc28j60*>(eth._eth.getDriverHandle());
+    uint32_t before = eth.driverStats().chip_resets;
+    {
+        LWIPMutex m;
+        system_reset(drv);
+    }
+    uint32_t t0 = millis();
+    while (eth.driverStats().chip_resets == before && millis() - t0 < 10000) {
+        delay(10);
+    }
+    uint32_t foundMs = millis() - t0;
+    bool found = eth.driverStats().chip_resets != before;
+    bool alive;
+    {
+        LWIPMutex m;
+        alive = enc28j60_alive_blk(drv);
+    }
+    Serial.printf("LOSTCHIP found=%d found_ms=%lu alive=%d resets=%lu recoveries=%lu\n", found,
+                  (unsigned long)foundMs, alive, (unsigned long)(eth.driverStats().chip_resets - before),
+                  (unsigned long)eth.driverStats().recoveries);
+}
+
 // The registers of the chip and the pointers of the driver, for finding out why a transfer failed
 static void cmdDiag()
 {
@@ -568,6 +696,10 @@ static void handleLine(char* line)
         cmdDns(args);
     } else if (strcmp(line, "FLAP") == 0) {
         cmdFlap();
+    } else if (strcmp(line, "CHAIN") == 0) {
+        cmdChain(args);
+    } else if (strcmp(line, "LOSTCHIP") == 0) {
+        cmdLostChip();
     } else if (strcmp(line, "DIAG") == 0) {
         cmdDiag();
     } else if (strcmp(line, "RESET") == 0) {

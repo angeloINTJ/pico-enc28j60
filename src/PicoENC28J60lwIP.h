@@ -108,6 +108,7 @@ class PicoENC28J60LwipDriver {
         _setLinked(_eth.linkStatus());
         _netif = net;
         _lastLinkCheck = millis();
+        _lastHealthCheck = millis();
         return true;
     }
 
@@ -129,10 +130,25 @@ class PicoENC28J60LwipDriver {
     }
 
     // Called by lwIP with its lock held. LWIP_NETIF_TX_SINGLE_PBUF is set in
-    // the core, so p is one contiguous buffer.
+    // the core, so p is one contiguous buffer; if that ever changes, the pieces
+    // of a chain are put together, because only the first would be sent.
     uint16_t sendFrame(struct pbuf *p)
     {
-        bool sent = _eth.sendFrame((const uint8_t *)p->payload, p->len);
+        const uint8_t *data = static_cast<const uint8_t *>(p->payload);
+        uint16_t len = p->len;
+        uint8_t *joined = nullptr;
+        if (p->next != nullptr) {
+            if (p->tot_len > PicoENC28J60::MAX_FRAME_SIZE ||
+                (joined = static_cast<uint8_t *>(malloc(p->tot_len))) ==
+                    nullptr) {
+                return 0;
+            }
+            pbuf_copy_partial(p, joined, p->tot_len, 0);
+            data = joined;
+            len = p->tot_len;
+        }
+        bool sent = _eth.sendFrame(data, len);
+        free(joined);
         _traffic++;
         if (_sent) {
             _sent(_sentArg);
@@ -147,6 +163,7 @@ class PicoENC28J60LwipDriver {
         if (_frameLen != 0) {
             return _frameLen;
         }
+        _checkChip();
 
         if (_config.irq_pin >= 0) {
             // A call that finds the INT line high returns without touching the
@@ -235,6 +252,20 @@ class PicoENC28J60LwipDriver {
   private:
     static constexpr uint32_t LINK_CHECK_MS = 250;
 
+    // How often to look whether the chip lost its configuration. Also with the
+    // INT pin: a chip that was reset says nothing, so this is the one thing
+    // that an idle network does ask of it, one SPI transaction a second.
+    static constexpr uint32_t HEALTH_CHECK_MS = 1000;
+
+    void _checkChip()
+    {
+        uint32_t now = millis();
+        if (now - _lastHealthCheck >= HEALTH_CHECK_MS) {
+            _lastHealthCheck = now;
+            _eth.checkChip();
+        }
+    }
+
     void _checkLink()
     {
         uint32_t now = millis();
@@ -292,6 +323,7 @@ class PicoENC28J60LwipDriver {
     uint32_t _delivered = 0;
     uint32_t _traffic = 0;
     uint32_t _lastLinkCheck = 0;
+    uint32_t _lastHealthCheck = 0;
     void (*_wake)(void *) = nullptr;
     void *_wakeArg = nullptr;
     void (*_sent)(void *) = nullptr;

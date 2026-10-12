@@ -22,6 +22,12 @@ silicon errata. The lwIP interface without the INT pin answers faster.
 * Recovery from a PIO that stops running: `enc28j60_io_failed()` and
   `enc28j60_recover()` in the C driver, and in `PicoENC28J60` a restart of the state
   machine and of the chip, with `Stats::io_errors` and `Stats::recoveries`.
+* `PicoENC28J60::checkChip()` finds out whether the chip lost its configuration, which a
+  reset of the chip does silently (a glitch of its supply, say), and configures it
+  again; `Stats::chip_resets` counts it. One SPI transaction. `PicoENC28J60lwIP` calls it
+  once a second, with or without the INT pin. On the bench the chip was reset behind the
+  back of the driver: the interface noticed within a second and ping and TCP worked
+  afterwards.
 * `Stats::tx_aborts` and `Stats::tx_retries`; in the C driver
   `enc28j60_frame_send_blk()` and `enc28j60_tx_status_blk()`, which gives the transmit
   status vector of a frame.
@@ -31,7 +37,8 @@ silicon errata. The lwIP interface without the INT pin answers faster.
 * `extras/bench/BenchLwip` and `benchlwip.py`: tests of the lwIP interface on the
   hardware, with the PC on the other side: DHCP, ping both ways, TCP and UDP servers,
   a TCP client, DNS, a static address, `end()` followed by `begin()`, fragmented
-  datagrams, and the cable being pulled out and put back.
+  datagrams, chained buffers, a chip that was reset behind the back of the interface, and
+  the cable being pulled out and put back.
 * A GitHub Actions workflow: `arduino-lint`, the formatting of the sources, and a build
   of every example for the Pico, Pico W, Pico 2 and Pico 2 W.
 
@@ -80,6 +87,8 @@ silicon errata. The lwIP interface without the INT pin answers faster.
   was told nothing and went on with the lease it had. On the bench the PHY was
   powered down and up: the address was asked for again and the connections worked
   afterwards.
+* `PicoENC28J60lwIP` puts the pieces of a chain of buffers together before sending, instead
+  of sending the first one only. The core never hands over a chain, so this is a guard.
 * `hasPacket()` is one read of the packet counter.
 * `README.md` has a section on what the library does when things go wrong and what it
   does not do.

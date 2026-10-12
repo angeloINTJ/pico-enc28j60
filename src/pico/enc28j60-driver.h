@@ -113,6 +113,12 @@ bool enc28j60_io_failed(const enc28j60 *eth);
 //! empties both buffers. Returns false if the chip does not answer.
 bool enc28j60_recover(enc28j60 *eth);
 
+//! Is the chip still configured? A reset of the chip, say by a glitch of its
+//! supply, puts the registers back to their defaults, which leaves the receiver
+//! off, and nothing else turns it off once the driver has started it. One SPI
+//! transaction.
+bool enc28j60_alive_blk(enc28j60 *eth);
+
 //! Get the revision id of the hardware
 uint8_t enc28j60_revision_blk(enc28j60 *eth);
 

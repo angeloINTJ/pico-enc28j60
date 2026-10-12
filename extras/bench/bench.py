@@ -44,7 +44,7 @@ PICO_MAC = "02:50:49:43:4f:01"
 PORT_RX, PORT_ECHO, PORT_TX, PEER_PORT = 9999, 9997, 9998, 9998
 SIZES = [10, 18, 100, 400, 800, 1200, 1472]  # UDP payload sizes
 ALL_TESTS = ["init", "cfgerr", "pioful", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong",
-             "txbburst", "soak", "rxflood", "txstat", "pioshare", "stall", "lifecycle", "txmix"]
+             "txbburst", "soak", "rxflood", "txstat", "pioshare", "stall", "lifecycle", "txmix", "lostchip"]
 IRQ_TESTS = ["irqidle", "irqedge", "irqlink"]  # only with --irq
 results = []
 
@@ -511,6 +511,20 @@ def t_txmix(p, host_ip, count=240):
         "duplicates=%d corrupted=%d" % (r[0], 0x2000 - r[0], r[4], r[5], r[1], count, r[2], r[3]) for r in results))
 
 
+def t_lostchip(p, ip):
+    """The chip is reset behind the back of the driver, the way a glitch of its supply would: checkChip() has to notice,
+    configure it again, and the board has to answer pings afterwards."""
+    t = kv(p.cmd("LOSTCHIP", "LOSTCHIP", 20))
+    link = wait_link(p)
+    replies = ping_replies(ip) if link else 0
+    record("lostchip", num(t, "alive_before") == 0 and num(t, "fixed") == 1 and num(t, "alive_after") == 1 and
+           num(t, "resets") == 1 and num(t, "rev") == 6 and link and replies == 5,
+           "chip reset behind the driver: it %s the reset, checkChip() took %s ms to configure it again (resets counted "
+           "%s), revision 0x%02X; link %s, ping %d/5" %
+           ("MISSED" if num(t, "alive_before") else "noticed", t["ms"], t["resets"], num(t, "rev"),
+            "up" if link else "DOWN", replies))
+
+
 def int_level(p, samples=5):
     """The level of the INT pin as the board sees it, sampled a few times over 0.2 s; 1 = idle."""
     levels = []
@@ -644,6 +658,8 @@ def main():
             t_lifecycle(p, args.ip)
         if "txmix" in wanted:
             t_txmix(p, host_ip)
+        if "lostchip" in wanted:
+            t_lostchip(p, args.ip)
         if args.irq is not None:
             if "irqidle" in wanted:
                 t_irqidle(p)

@@ -308,6 +308,34 @@ bool PicoENC28J60::begin(const ENC28J60Config &config)
     return begin();
 }
 
+bool PicoENC28J60::checkChip()
+{
+    if (!_usable()) {
+        return false;
+    }
+    enc28j60 *eth = driver(_eth);
+    bool alive = enc28j60_alive_blk(eth);
+    if (_failed()) {
+        return false;
+    }
+    if (alive) {
+        return true;
+    }
+
+    // Configured again from the start, as after a failed transfer. If that does
+    // not work the driver stays failed, and _usable() tries again.
+    _stats.chip_resets++;
+    if (!enc28j60_recover(eth)) {
+        return false;
+    }
+    if (_config.irq_pin >= 0) {
+        _enableChipInterrupts();
+        _irq_pending = true;
+    }
+    _stats.recoveries++;
+    return true;
+}
+
 bool PicoENC28J60::linkStatus()
 {
     if (!_usable())

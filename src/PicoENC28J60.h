@@ -236,6 +236,15 @@ class PicoENC28J60 {
     //! looks
     uint8_t peekInterruptFlags();
 
+    //! Check that the chip still holds its configuration, with one SPI
+    //! transaction. A reset of the chip, a glitch of its supply say, puts its
+    //! registers back to their defaults and switches the receiver off, and
+    //! nothing tells you. If that happened the chip is configured again, which
+    //! empties both of its buffers, and Stats::chip_resets counts it. Call it
+    //! now and then, once a second is plenty; PicoENC28J60lwIP does. Returns
+    //! false if the chip could not be brought back.
+    bool checkChip();
+
     //! A frame is waiting in the receive buffer (only looks: the INT pin is not
     //! masked). It asks the packet counter of the chip, because the flag of
     //! the chip is not reliable (silicon errata, issue 6): INT_PACKET_RX in
@@ -313,6 +322,7 @@ class PicoENC28J60 {
         uint32_t tx_retries; //!< frames sent again after a late collision
         uint32_t io_errors; //!< times the PIO state machine did not run
         uint32_t recoveries; //!< times the chip was started over after one
+        uint32_t chip_resets; //!< times the chip was found to have been reset
     };
     const Stats &stats() const
     {

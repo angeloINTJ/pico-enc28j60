@@ -23,9 +23,10 @@
  * Before the chip is initialized for real, setup() checks that begin() fails,
  * fast and for the right reason, with no chip behind the pins, with settings
  * that make no sense and with no room left in the PIO. The commands PIOSHARE,
- * STALL, LIFECYCLE, TSV and TXMIX check what the driver does about the other
- * users of the PIO, a state machine that stops, begin() after end(), the status
- * of a transmitted frame, and sending with the longest receive buffer.
+ * STALL, LIFECYCLE, TSV, TXMIX and LOSTCHIP check what the driver does about
+ * the other users of the PIO, a state machine that stops, begin() after end(),
+ * the status of a transmitted frame, sending with the longest receive buffer, and
+ * a chip that was reset behind its back.
  */
 #include <PicoENC28J60.h>
 #include <SerialPIO.h>
@@ -621,6 +622,24 @@ static void cmdLifecycle()
                   eth.getRevision(), h ? pio_sm_is_claimed(h->cfg->pio, h->cfg->sm) : 0);
 }
 
+// LOSTCHIP: reset the chip behind the back of the driver, as a glitch of its supply would, and see whether
+// checkChip() finds out and configures it again
+static void cmdLostChip()
+{
+    enc28j60* h = driverHandle();
+    uint32_t before = eth.stats().chip_resets;
+    system_reset(h);  // every register goes back to its default: the receiver is off
+    delay(2);
+    bool alive = enc28j60_alive_blk(h);
+    uint32_t t0 = micros();
+    bool fixed = eth.checkChip();
+    uint32_t us = micros() - t0;
+    bool aliveAfter = enc28j60_alive_blk(h);
+    Serial.printf("LOSTCHIP alive_before=%d fixed=%d alive_after=%d ms=%lu resets=%lu rev=0x%02X\n", alive, fixed,
+                  aliveAfter, (unsigned long)(us / 1000), (unsigned long)(eth.stats().chip_resets - before),
+                  eth.getRevision());
+}
+
 // TSV <length> <broadcast 0/1>: send one frame through the C driver and read its transmit status vector.
 static void cmdTsv(uint16_t len, bool broadcast)
 {
@@ -681,6 +700,8 @@ static void handleCommand(char* line)
         cmdStall();
     } else if (strcmp(line, "LIFECYCLE") == 0) {
         cmdLifecycle();
+    } else if (strcmp(line, "LOSTCHIP") == 0) {
+        cmdLostChip();
     } else if (sscanf(line, "TXMIX %u %lu", &a, &n) == 2) {
         cmdTxMix(a, n);
     } else if (sscanf(line, "TSV %u %u", &a, &b) == 2) {
