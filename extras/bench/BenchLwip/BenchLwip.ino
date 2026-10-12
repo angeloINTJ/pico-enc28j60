@@ -690,9 +690,9 @@ static void cmdDiag()
     Serial.printf(
         "DIAG econ1=%02x econ2=%02x eir=%02x eie=%02x estat=%02x pktcnt=%u macon1=%02x macon3=%02x macon4=%02x "
         "phstat1=%04x phstat2=%04x txst=%u txnd=%u wrpt=%u rdpt=%u rxrdpt=%u rxwrpt=%u drv_wptr=%u drv_rptr=%u "
-        "tx_frames=%lu tx_failures=%lu tx_aborts=%lu tx_retries=%lu rx_frames=%lu\n",
+        "drv_txfull=%d tx_frames=%lu tx_failures=%lu tx_aborts=%lu tx_retries=%lu rx_frames=%lu\n",
         econ1, econ2, eir, eie, estat, pktcnt, macon1, macon3, macon4, phstat1, phstat2, txst, txnd, wrpt, rdpt, rxrdpt,
-        rxwrpt, drv->wptr, drv->dev_rptr, (unsigned long)s.tx_frames, (unsigned long)s.tx_failures,
+        rxwrpt, drv->wptr, drv->dev_rptr, drv->tx_full, (unsigned long)s.tx_frames, (unsigned long)s.tx_failures,
         (unsigned long)s.tx_aborts, (unsigned long)s.tx_retries, (unsigned long)s.rx_frames);
 }
 

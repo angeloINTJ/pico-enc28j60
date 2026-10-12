@@ -9,6 +9,11 @@ now, and follow the same silicon errata as the blocking functions. The tools tha
 a change before it goes in (the hardware gate, a check of every commit, the timing of
 the PIO program) are part of the repository now.
 
+The lwIP interface sends full-size frames at 787 kB/s instead of 474: it uploads a frame
+while the one before is on the wire. The transmit area of the chip, which the FreeRTOS
+driver already used that way, refused room it had, and with a long receive buffer could
+give a frame bytes of the one being sent.
+
 ### Fixed
 
 * `spi_hz` near 20 MHz could make SPI periods shorter than the 50 ns that the chip
@@ -59,6 +64,21 @@ the PIO program) are part of the repository now.
 * The command macros of the C driver used their arguments without parentheses, so
   `BFC_CMD(ECON1, TXRTS | 0x3)` would have masked only the `0x3`. The firmware built from
   the code that uses them is the same, byte for byte.
+* The transmit area of the chip gave a frame less room than there was when another frame
+  was waiting or on the wire, which is how the FreeRTOS driver sends, and now the lwIP
+  interface. A frame that would have ended right where the waiting one began was
+  refused: with the default receive buffer, two of every three full-size frames waited
+  for the wire. After a frame was refused at the end of the area, long frames were
+  refused with nothing waiting, until a short one went out. And with a receive buffer of
+  0x1420 or more, a frame could be given bytes of the one on the wire. On the bench
+  (`txring`, 240 frames for each receive buffer, 2026-10-12): 159 uploads waited at
+  0x1000; 3 frames were dropped at 0x1600 and at 0x1A00; at 0x145A, seven frames in a
+  row made 34 uploads land on the frame on the wire, and with the SPI clock at 20 MHz
+  those 34 frames went out corrupted (the chip sent them, the PC got 206 of 240). Now no
+  upload waits at 0x1000, no frame is dropped and none lands on another; nor does any in
+  a model of the area run with random frames at every even receive buffer size from
+  0x0800 to 0x1A00 (32 million operations) and with every sequence of six operations at
+  the edges (48 million).
 
 ### Added
 
@@ -97,10 +117,10 @@ the PIO program) are part of the repository now.
   wire, and waits for that one only when the next frame is ready to start, or when the
   polling sees that it ended; `PicoENC28J60::sendFrame()` still waits for the wire. On
   the bench (SPI clock 10 MHz, 2026-10-12), 500 UDP datagrams of 1472 bytes with no
-  pause went out at 632 kB/s polled and 636 kB/s with the INT pin, from 474 and 480
-  kB/s, and a TCP upload of 100 kB from the board took 168-170 ms instead of 238-291 ms.
-  `stats().tx_frames` counts such a frame once it has left the wire, and `tx_failures`
-  one that fails after it was handed over.
+  pause went out at 787 kB/s polled and 804 kB/s with the INT pin (1.87 and 1.83 ms a
+  frame), from 474 and 480 kB/s (3.10 and 3.07 ms), and a TCP upload of 100 kB from the
+  board took 148-151 ms instead of 238-291 ms. `stats().tx_frames` counts such a frame
+  once it has left the wire, and `tx_failures` one that fails after it was handed over.
 
 ## 1.2.0 - 2026-10-12
 

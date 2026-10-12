@@ -626,6 +626,7 @@ bool enc28j60_recover(enc28j60 *eth)
     eth->io_error = false;
     eth->wptr = cfg->rx_size;
     eth->dev_rptr = eth->wptr;
+    eth->tx_full = false;
     if (!initialize_enc28j60(eth, cfg)) {
         // Nothing answers; keep the transfers off until the next attempt
         eth->io_error = true;
@@ -754,25 +755,38 @@ void enc28j60_irq_ack(enc28j60 *eth, uint8_t flags)
     enc28j60_cmd_buf_execute(eth);
 }
 
+// The transmit area, from the end of the receive buffer to the end of the RAM,
+// is a ring of frames, each with its control byte before it and the room for
+// its status vector after it, each starting at an even address. wptr is where
+// the next frame goes; dev_rptr is where the space of the frames not confirmed
+// yet begins, and with none both are at the start of the area. A frame that
+// does not fit before the end of the RAM goes to the start of the area, if it
+// fits there before dev_rptr. A frame may end right at dev_rptr: the pointers
+// are then equal, as with nothing waiting, and tx_full tells the two apart.
 static bool tx_buffer_fit(enc28j60 *eth, size_t size)
 {
-    // The read pointer is not in front of us and we cannot fit the frame in the
-    // remaining RAM; so we
-    if (eth->wptr >= eth->dev_rptr &&
-        eth->wptr + size + TX_OVERHEAD_SIZE > RAM_SIZE) {
-        if (eth->dev_rptr == eth->cfg->rx_size) {
-            return false;
-        }
-        eth->wptr = eth->cfg->rx_size;
-    }
-
-    // The read pointer is if front of us, so we need to check if we
-    // can fit the frame
-    if (eth->wptr < eth->dev_rptr &&
-        eth->wptr + size + TX_OVERHEAD_SIZE >= eth->dev_rptr) {
+    if (eth->tx_full || size >= RAM_SIZE) {
         return false;
     }
-    return true;
+    size_t need = size + TX_OVERHEAD_SIZE;
+
+    // The frames waiting, if any, are behind wptr: there is room up to the end
+    // of the RAM, then from the start of the area up to dev_rptr. wptr moves
+    // only for a frame that fits: enc28j60_frame_tx_confirm() knows that
+    // nothing waits when the last frame confirmed ends at wptr.
+    if (eth->wptr >= eth->dev_rptr) {
+        if (eth->wptr + need <= RAM_SIZE) {
+            return true;
+        }
+        if (eth->cfg->rx_size + need <= eth->dev_rptr) {
+            eth->wptr = eth->cfg->rx_size;
+            return true;
+        }
+        return false;
+    }
+
+    // The frames waiting are ahead of wptr, from dev_rptr on
+    return eth->wptr + need <= eth->dev_rptr;
 }
 
 static uint32_t tx_compute_ptrs(enc28j60 *eth, size_t size)
@@ -784,6 +798,9 @@ static uint32_t tx_compute_ptrs(enc28j60 *eth, size_t size)
     if (eth->wptr % 2) {
         ++eth->wptr;
     }
+
+    // Up to the space of the frames waiting: no room until one is confirmed
+    eth->tx_full = eth->wptr == eth->dev_rptr;
     return id;
 }
 
@@ -1076,6 +1093,7 @@ void enc28j60_frame_tx_confirm(enc28j60 *eth, uint32_t frame_id)
     if (eth->dev_rptr % 2) {
         ++eth->dev_rptr;
     }
+    eth->tx_full = false; // the space of that frame is free again
 
     // Nothing is waiting any more: start over from the beginning of the
     // transmit area. A frame that does not fit before the end of the RAM goes

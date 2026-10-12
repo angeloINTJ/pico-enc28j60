@@ -101,6 +101,7 @@ typedef struct {
     enc28j60_cmd_buf *cmd_buf;
     uint16_t dev_rptr;
     uint16_t wptr;
+    bool tx_full; //!< the frames waiting fill the transmit area up to dev_rptr
     bool io_error; //!< an SPI transfer stalled; see enc28j60_io_failed()
 } enc28j60;
 
@@ -202,8 +203,11 @@ void enc28j60_irq_ack(enc28j60 *eth, uint8_t flags);
 
 #define ENC28J60_INVALID_FRAME_ID 0xffffffff
 
-//! Upload a frame
-//! Returns a frame id needed for transmission
+//! Upload a frame into the transmit area of the chip. Returns the id that the
+//! functions below take, or ENC28J60_INVALID_FRAME_ID if there is no room. The
+//! space of a frame is held until it is confirmed, by
+//! enc28j60_frame_tx_confirm() or by a blocking function that waits for the
+//! frame, so frames may be uploaded while others wait or are on the wire.
 uint32_t enc28j60_frame_upload(enc28j60 *eth, size_t size, const void *data);
 uint32_t enc28j60_frame_upload_blk(enc28j60 *eth, size_t size,
                                    const void *data);
@@ -255,7 +259,9 @@ bool enc28j60_frame_tx_ended_blk(enc28j60 *eth);
 //! first. Valid until the next frame is uploaded over it.
 void enc28j60_tx_status_blk(enc28j60 *eth, uint32_t frame_id, uint8_t tsv[7]);
 
-//! Confirm frame transmission
+//! Give back the space of a frame that was sent or given up on. Frames are
+//! confirmed once each, in the order in which they were uploaded; confirming
+//! one gives back the space of any uploaded before it as well.
 void enc28j60_frame_tx_confirm(enc28j60 *eth, uint32_t frame_id);
 
 //! Get the size of an incoxing frame
