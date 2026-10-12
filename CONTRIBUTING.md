@@ -44,9 +44,14 @@ The CI cannot test a network. A change to the driver, to the PIO program or to t
 interface needs the tests of [`extras/bench`](extras/bench/README.md) on a real board:
 `bench.py` (the raw class) and `benchlwip.py` (the lwIP interface), with and without
 the INT pin if the change can tell the difference, and `webtest.py` for the web
-example. Say in the pull request what you ran and what it printed. A change that
-fixes a bug should come with a test that fails without it; the bench is where such
-tests go.
+example. [`extras/bench/gate.sh`](extras/bench/gate.sh) runs all of them, one after the
+other, and writes a summary ([how](extras/bench/README.md#the-whole-gate)); the change
+goes in only after it passed. Say in the pull request what you ran and what it printed. A
+change that fixes a bug should come with a test that fails without it; the bench is where
+such tests go. The CI looks at the tip of a branch: a branch with several commits can be
+checked commit by commit, with no board, by `extras/tools/check-commits.sh <base> <branch>`
+(the formatting, the links and the build of the examples and the bench sketches, for each
+commit).
 
 ## Commits and pull requests
 

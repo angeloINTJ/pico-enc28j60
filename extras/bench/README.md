@@ -138,3 +138,82 @@ heap does not shrink.
   a limit of the hardware and the clock, not a test failure to chase. `rxflood`
   floods on purpose and only asks for intact frames; `rxoverflow` makes the buffer
   overflow whatever the clock, and checks what the driver does about it.
+
+## The whole gate
+
+`gate.sh` runs the suites above on a board, one after the other, each into its own log, and
+ends with a summary that says which passed. The exit status is 0 only if every suite that ran
+passed. It compiles and flashes **the checkout it is in**, so a branch or a worktree is tested
+by running its own copy of the script. **A change to the driver, to the PIO program or to the
+lwIP interface goes in only after the gate passed on a board.** Say in the pull request which
+options you ran, and paste the summary.
+
+```
+extras/bench/gate.sh --ip 192.168.3.77 --irq 6 --web-mac c2:62:13:20:3e:27
+```
+
+| Suite | What it runs |
+|-------|--------------|
+| `bench_poll`, `bench_irq` | `bench.py --flash`; `bench_irq` is the interrupt build (`--irq`) |
+| `lwip_poll`, `lwip_irq` | `benchlwip.py --flash --static-ip`; `lwip_irq` is the interrupt build (`--irq`) |
+| `web_poll`, `web_irq` | compiles `examples/WebServerLedToggle` (with `-DINT_PIN=<GPIO>` for `web_irq`), flashes it, finds the board on the LAN by its MAC address, and runs `webtest.py --soak` on it |
+
+The `_irq` suites run with `--irq`, and the web suites with `--web-mac` and without `--spi-hz`
+(the example has no such option). A suite that does not run is named in the summary, with the
+reason. Without `--irq` and `--web-mac` the gate is the two polled suites of `bench.py` and
+`benchlwip.py`.
+
+| Option | |
+|--------|-|
+| `--ip ADDR` | Required: a free address for `bench.py`. The address plus 2 has to be free too (the `setmac` test) |
+| `--lwip-ip ADDR` | A free address for the static address test of `benchlwip.py`. Default: `--ip` plus 1 |
+| `--irq GPIO` | The INT pin of the chip is wired to this GPIO. Every suite then also runs in its interrupt build |
+| `--web-mac MAC` | The MAC address of the web example (below). With it the web suites run |
+| `--soak SECONDS` | The length of the soak in each web suite. Default: 240 |
+| `--spi-hz HZ` | The SPI clock of `bench.py` and `benchlwip.py`. `--spi-assert-mhz` is set to the same clock, so that the `spi` test asks for clean transfers at it |
+| `--port PORT` | The serial port of the Pico. Default: the first `/dev/serial/by-id/*Pico*`. Uploads use the device node that it points to, which is what the uploader of the core needs |
+| `--out DIR` | Where the logs and the summary go. Default: `$TMPDIR/picoenc-gate`, or `/tmp/picoenc-gate` |
+| `--fqbn FQBN` | The board. Default: `rp2040:rp2040:rpipico` |
+
+It takes about 16 minutes with `--irq`, `--web-mac` and the default soak (the bench of the
+author, October 2026); the two soaks are 8 of those minutes. It needs Linux (for the serial
+port and `ip neigh`), `arduino-cli` with the core, pyserial and `ping`, the PC on the same /24 as
+the board, and with `--web-mac` also `curl` and `ip`. No root.
+
+`summary.txt` in the output folder is the result, and `<suite>.txt` is the log of each suite:
+
+```
+gate on 1d2db7b 0 uncommitted paths
+bench_poll rc=0 :: 28/28 passed
+bench_irq rc=0 :: 31/31 passed
+lwip_poll rc=0 :: 17/17 passed
+lwip_irq rc=0 :: 17/17 passed
+web_poll rc=0 :: 8/8 passed
+web_irq rc=0 :: 8/8 passed
+DONE
+```
+
+The first line is the commit and the number of uncommitted paths. After `rc=`, the exit status
+of the suite, comes its line with `passed`, or the last line of its log if it has none, which
+says why it did not get there. For the web suites the status is 3 if the example did not compile,
+4 if it did not upload, 5 if the board was not found, and otherwise that of `webtest.py`. `DONE`
+is the last line, and is missing if the gate did not get to the end. The counts above are those
+of release 1.2.0 on the bench of the author; they grow when tests are added.
+
+**The MAC address of the web example.** The example does not print it, and the gate finds the
+board by it: five seconds after an upload it pings the 254 addresses of the /24 of `--ip`, up to
+12 times, and reads the neighbor table of the PC. The example starts the interface with
+`begin()` and no address, so the core makes the MAC address from the unique ID of the board:
+bytes 2 to 7 of the ID, the first one made unicast and locally administered, and 2 added to
+the fourth (the number that lwIP gives the interface; core 6.3.0, `LwipIntfDev.h`). The ID is
+the 16 hexadecimal digits in the name of the device in `/dev/serial/by-id`:
+
+```
+id=$(ls /dev/serial/by-id/*Pico* | head -n 1 | grep -o '[0-9A-Fa-f]\{16\}' | tr A-F a-f)
+printf '%02x:%s:%s:%02x:%s:%s\n' $(( (0x${id:4:2} & 0xFE) | 2 )) "${id:6:2}" "${id:8:2}" $(( (0x${id:10:2} + 2) & 255 )) "${id:12:2}" "${id:14:2}"
+```
+
+For the Pico of the bench of the author, `usb-Raspberry_Pi_Pico_E660C062131E3E27-if00`, it prints
+`c2:62:13:20:3e:27`, the address that the author's own gate looked for. A way that does not depend
+on the core: flash the example, ping the address that it prints on the serial port, and read
+`ip neigh show <address>`; the MAC address follows `lladdr`.
