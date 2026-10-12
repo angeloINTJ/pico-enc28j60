@@ -35,7 +35,7 @@ locally from the root of the repository.
 | Formatting of the C and C++ sources | `clang-format-18 --dry-run --Werror src/*.c src/*.cpp src/PicoENC28J60.h src/PicoENC28J60lwIP.h src/enc28j60-cmd.h src/pico/*.h freertos/*.c freertos/pico/*.h` (use version 18: other versions format differently; `-i` instead of `--dry-run --Werror` fixes the files) |
 | Links between the Markdown files | `python3 extras/tools/check-links.py` |
 | The PIO header | `extras/tools/regenerate-pio-header.sh` after any change to `src/enc28j60-spi.pio`; the CI checks that the program in `src/enc28j60-spi.pio.h` is the one pioasm makes of the `.pio` file |
-| Build | the examples and the bench sketches for the Pico, Pico W, Pico 2 and Pico 2 W, with the oldest and the newest core the library supports, and the C driver as a CMake library with the Pico SDK (`-Werror`, and the static analyzer of GCC on the driver) |
+| Build | the examples and the bench sketches for the Pico, Pico W, Pico 2 and Pico 2 W, with the oldest and the newest core the library supports, and the C driver as a CMake library with the Pico SDK (`-Werror`, and on the driver the static analyzer of GCC and `-Wconversion`) |
 
 ## Testing on hardware
 

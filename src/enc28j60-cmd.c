@@ -35,7 +35,8 @@ void __time_critical_func(enc28j60_execute_blocking)(enc28j60 *eth,
 
     size_t tx_remain = 2 + tx_sz;
     size_t rx_remain = rx_sz;
-    uint8_t data[4] = { cmd >> 24, cmd >> 16, cmd >> 8, cmd };
+    uint8_t data[4] = { (uint8_t)(cmd >> 24), (uint8_t)(cmd >> 16),
+                        (uint8_t)(cmd >> 8), (uint8_t)cmd };
     const uint8_t *snd = data;
     uint8_t *rcv = dst;
     uint32_t spins = 0;
@@ -192,8 +193,8 @@ void enc28j60_cmd_buf_init(enc28j60 *eth)
     b->tx_buf_ptr = b->tx_buf;
     b->rx_buf_ptr = b->rx_buf;
 
-    b->tx_channel = dma_claim_unused_channel(true);
-    b->tx_ctrl_channel = dma_claim_unused_channel(true);
+    b->tx_channel = (uint)dma_claim_unused_channel(true);
+    b->tx_ctrl_channel = (uint)dma_claim_unused_channel(true);
 
     dma_channel_config c = dma_channel_get_default_config(b->tx_channel);
     channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
@@ -216,7 +217,7 @@ void enc28j60_cmd_buf_init(enc28j60 *eth)
     add_channel_callback(cfg->dma_irq, b->tx_channel, tx_irq_handler, eth);
     dma_irqn_set_channel_enabled(cfg->dma_irq, b->tx_channel, true);
 
-    b->rx_channel = dma_claim_unused_channel(true);
+    b->rx_channel = (uint)dma_claim_unused_channel(true);
     c = dma_channel_get_default_config(b->rx_channel);
     channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
     channel_config_set_read_increment(&c, false);
@@ -262,7 +263,8 @@ bool enc28j60_cmd_buf_encode_cmd(enc28j60 *eth, uint32_t cmd, const void *src)
     size_t rx_sz = CMD_RXSZ(cmd);
     size_t tx_sz = 2 + CMD_TXSZ(cmd);
     size_t payload_sz = 0;
-    uint8_t data[4] = { cmd >> 24, cmd >> 16, cmd >> 8, cmd };
+    uint8_t data[4] = { (uint8_t)(cmd >> 24), (uint8_t)(cmd >> 16),
+                        (uint8_t)(cmd >> 8), (uint8_t)cmd };
 
     if (c == WBM_OP) {
         payload_sz = tx_sz - 3;
@@ -296,9 +298,9 @@ bool enc28j60_cmd_buf_encode_cmd(enc28j60 *eth, uint32_t cmd, const void *src)
         *b->tx_buf_ptr++ = data[i];
     }
 
-    b->tx_bytes_total += tx_sz;
-    b->tx_bytes_current += tx_sz;
-    b->rx_bytes += rx_sz;
+    b->tx_bytes_total = (uint16_t)(b->tx_bytes_total + tx_sz);
+    b->tx_bytes_current = (uint16_t)(b->tx_bytes_current + tx_sz);
+    b->rx_bytes = (uint16_t)(b->rx_bytes + rx_sz);
 
     if (c == WBM_OP) {
         b->tx_ctrl[b->tx_ctrl_idx].len = b->tx_bytes_current;
@@ -372,7 +374,7 @@ void enc28j60_cmd_buf_set_rx_ptr(enc28j60 *eth, size_t size, void *rbuf)
 {
     enc28j60_cmd_buf *b = eth->cmd_buf;
     b->rx_buf = rbuf;
-    b->rx_size = size;
+    b->rx_size = (uint16_t)size;
     b->rx_buf_ptr = b->rx_buf;
     b->rx_bytes = 0;
 }

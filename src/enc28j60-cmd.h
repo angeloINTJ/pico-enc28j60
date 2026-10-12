@@ -324,7 +324,7 @@ static inline uint8_t reg_read_e_blk(enc28j60 *eth, uint8_t addr)
     uint32_t result = 0;
     uint32_t cmd = RCR_E_CMD(addr);
     enc28j60_execute_blocking(eth, cmd, (uint8_t *)&result, NULL);
-    return result;
+    return (uint8_t)result;
 }
 
 //! Read a MAC or MII register
@@ -335,7 +335,7 @@ static inline uint8_t reg_read_m_blk(enc28j60 *eth, uint8_t addr)
     uint32_t result = 0;
     uint32_t cmd = RCR_M_CMD(addr);
     enc28j60_execute_blocking(eth, cmd, (uint8_t *)&result, NULL);
-    return result >> 8;
+    return (uint8_t)(result >> 8);
 }
 
 //! Write a register
@@ -343,6 +343,15 @@ static inline void reg_write_blk(enc28j60 *eth, uint8_t addr, uint8_t data)
 {
     uint32_t cmd = WCR_CMD(addr, data);
     enc28j60_execute_blocking(eth, cmd, NULL, NULL);
+}
+
+//! Write a 16-bit value to a pair of registers: the low byte to the one at
+//! addr and the high byte to the next one, in that order (writing MIWRH is what
+//! starts a write to the PHY)
+static inline void reg_write16_blk(enc28j60 *eth, uint8_t addr, uint16_t value)
+{
+    reg_write_blk(eth, addr, (uint8_t)value);
+    reg_write_blk(eth, (uint8_t)(addr + 1), (uint8_t)(value >> 8));
 }
 
 //! Wait for the MII management interface to go idle; changes the selected
@@ -385,8 +394,7 @@ static inline void reg_write_p_blk(enc28j60 *eth, uint8_t addr, uint16_t data)
     reg_write_blk(eth, MIREGADR, addr);
 
     // Writing the higher byte automatically triggers the transaction
-    reg_write_blk(eth, MIWRL, data);
-    reg_write_blk(eth, MIWRH, data >> 8);
+    reg_write16_blk(eth, MIWRL, data);
 
     // Wait for MAC to write the values to the PHY
     mii_wait_blk(eth);
@@ -411,8 +419,7 @@ static inline void mem_write_at_blk(enc28j60 *eth, uint16_t addr, uint8_t size,
                                     const void *data)
 {
     bank_set_blk(eth, 0);
-    reg_write_blk(eth, EWRPTL, addr);
-    reg_write_blk(eth, EWRPTH, addr >> 8);
+    reg_write16_blk(eth, EWRPTL, addr);
     mem_write_blk(eth, size, data);
 }
 
@@ -421,8 +428,7 @@ static inline void mem_read_at_blk(enc28j60 *eth, uint16_t addr, uint8_t size,
                                    void *data)
 {
     bank_set_blk(eth, 0);
-    reg_write_blk(eth, ERDPTL, addr);
-    reg_write_blk(eth, ERDPTH, addr >> 8);
+    reg_write16_blk(eth, ERDPTL, addr);
     mem_read_blk(eth, size, data);
 }
 

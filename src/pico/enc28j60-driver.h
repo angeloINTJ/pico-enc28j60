@@ -228,8 +228,8 @@ void enc28j60_frame_tx_confirm(enc28j60 *eth, uint32_t frame_id);
 uint32_t enc28j60_frame_rx_info(enc28j60 *eth);
 uint32_t enc28j60_frame_rx_info_blk(enc28j60 *eth);
 
-#define ENC28J60_RX_SIZE(X) (X & 0xffff)
-#define ENC28J60_RX_NEXT(X) (X >> 16)
+#define ENC28J60_RX_SIZE(X) ((uint16_t)((X) & 0xffff))
+#define ENC28J60_RX_NEXT(X) ((uint16_t)((X) >> 16))
 
 //! Receive a frame
 void enc28j60_frame_rx(enc28j60 *eth, uint32_t rx_info, void *buffer);

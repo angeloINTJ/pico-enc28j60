@@ -346,28 +346,23 @@ static bool initialize_enc28j60(enc28j60 *eth, enc28j60_config *cfg)
     bank_set_blk(eth, 0);
 
     // The receive buffer starts at 0
-    reg_write_blk(eth, ERXSTL, 0);
-    reg_write_blk(eth, ERXSTH, 0);
+    reg_write16_blk(eth, ERXSTL, 0);
 
     // The receive buffer ends at the place accommodating the configured size;
     // the byte pointed to by the reg is included in the rx buffer
     uint16_t rx_sz = cfg->rx_size - 1;
-    reg_write_blk(eth, ERXNDL, rx_sz);
-    reg_write_blk(eth, ERXNDH, rx_sz >> 8);
+    reg_write16_blk(eth, ERXNDL, rx_sz);
 
     // The receive read pointer marks the end of the free space. Per the silicon
     // errata it must always be odd, so it starts at the end of the buffer
     // (the byte "before" ERXST in the circular buffer).
-    reg_write_blk(eth, ERXRDPTL, rx_sz);
-    reg_write_blk(eth, ERXRDPTH, rx_sz >> 8);
+    reg_write16_blk(eth, ERXRDPTL, rx_sz);
 
     // Read pointer to the beginning of the receive buffer
-    reg_write_blk(eth, ERDPTL, 0);
-    reg_write_blk(eth, ERDPTH, 0);
+    reg_write16_blk(eth, ERDPTL, 0);
 
     // Write pointer to the beginning of the transmit buffer
-    reg_write_blk(eth, EWRPTL, cfg->rx_size);
-    reg_write_blk(eth, EWRPTH, cfg->rx_size >> 8);
+    reg_write16_blk(eth, EWRPTL, cfg->rx_size);
 
     // Accept only valid unicast, multicast, and broadcast packets;
     // sections 6.3 and 8.0
@@ -395,8 +390,7 @@ static bool initialize_enc28j60(enc28j60 *eth, enc28j60_config *cfg)
 
     // Ethernet normally supports frames of 1518 bytes or less
     uint16_t max_frame_length = 1518;
-    reg_write_blk(eth, MAMXFLL, max_frame_length);
-    reg_write_blk(eth, MAMXFLH, max_frame_length >> 8);
+    reg_write16_blk(eth, MAMXFLL, max_frame_length);
 
     // Delay between the end of one transmission and the beginning of the next
     // in a back-to-back sequence. 0x12 represents the minimum IEEE specified
@@ -592,7 +586,8 @@ bool enc28j60_recover(enc28j60 *eth)
 //! does go low when a packet arrives and the interrupt is enabled.
 static uint8_t eir_with_packet_flag(enc28j60 *eth, uint8_t eir)
 {
-    return enc28j60_rx_count_blk(eth) ? (eir | PKTIF) : (eir & ~PKTIF);
+    return enc28j60_rx_count_blk(eth) ? (uint8_t)(eir | PKTIF) :
+                                        (uint8_t)(eir & (uint8_t)~PKTIF);
 }
 
 uint8_t enc28j60_irq_flags_blk(enc28j60 *eth)
@@ -713,7 +708,7 @@ static bool tx_buffer_fit(enc28j60 *eth, size_t size)
 static uint32_t tx_compute_ptrs(enc28j60 *eth, size_t size)
 {
     uint32_t id = ((uint32_t)eth->wptr) << 16;
-    eth->wptr += size;
+    eth->wptr = (uint16_t)(eth->wptr + size);
     id |= eth->wptr;
     eth->wptr += TX_OVERHEAD_SIZE;
     if (eth->wptr % 2) {
@@ -772,8 +767,7 @@ uint32_t enc28j60_frame_upload_blk(enc28j60 *eth, size_t size, const void *data)
     bank_set_blk(eth, 0);
 
     // Set the write pointer
-    reg_write_blk(eth, EWRPTL, eth->wptr);
-    reg_write_blk(eth, EWRPTH, eth->wptr >> 8);
+    reg_write16_blk(eth, EWRPTL, eth->wptr);
 
     // Set the frame header - transmit according to MACON3
     static const uint8_t zero = 0;
@@ -787,7 +781,7 @@ uint32_t enc28j60_frame_upload_blk(enc28j60 *eth, size_t size, const void *data)
         if (to_write > WBM_MAX) {
             to_write = WBM_MAX;
         }
-        mem_write_blk(eth, to_write, ptr);
+        mem_write_blk(eth, (uint8_t)to_write, ptr);
         ptr += to_write;
         remaining -= to_write;
     }
@@ -795,8 +789,8 @@ uint32_t enc28j60_frame_upload_blk(enc28j60 *eth, size_t size, const void *data)
     return tx_compute_ptrs(eth, size);
 }
 
-#define TX_START(X) (X >> 16)
-#define TX_END(X) (X & 0xffff)
+#define TX_START(X) ((uint16_t)((X) >> 16))
+#define TX_END(X) ((uint16_t)((X) & 0xffff))
 
 void enc28j60_frame_tx(enc28j60 *eth, uint32_t frame_id)
 {
@@ -835,12 +829,10 @@ void enc28j60_frame_tx_blk(enc28j60 *eth, uint32_t frame_id)
     reg_bits_clear_blk(eth, EIR, TXERIF | TXIF);
 
     // Start of the packet
-    reg_write_blk(eth, ETXSTL, start);
-    reg_write_blk(eth, ETXSTH, start >> 8);
+    reg_write16_blk(eth, ETXSTL, start);
 
     // Last byte of the data payload
-    reg_write_blk(eth, ETXNDL, end);
-    reg_write_blk(eth, ETXNDH, end >> 8);
+    reg_write16_blk(eth, ETXNDL, end);
 
     // Fire things up
     reg_bits_set_blk(eth, ECON1, TXRTS);
@@ -910,8 +902,7 @@ void enc28j60_tx_status_blk(enc28j60 *eth, uint32_t frame_id, uint8_t tsv[7])
     uint16_t read_ptr = reg_read_e_blk(eth, ERDPTL);
     read_ptr |= (uint16_t)reg_read_e_blk(eth, ERDPTH) << 8;
     mem_read_at_blk(eth, TX_END(frame_id) + 1, TSV_SIZE, tsv);
-    reg_write_blk(eth, ERDPTL, read_ptr);
-    reg_write_blk(eth, ERDPTH, read_ptr >> 8);
+    reg_write16_blk(eth, ERDPTL, read_ptr);
 }
 
 enc28j60_tx_status enc28j60_frame_send_blk(enc28j60 *eth, uint32_t frame_id,
@@ -972,10 +963,8 @@ void enc28j60_rx_reset_blk(enc28j60 *eth)
 
     // Empty the buffer: both pointers back to the start state
     bank_set_blk(eth, 0);
-    reg_write_blk(eth, ERXRDPTL, rx_end);
-    reg_write_blk(eth, ERXRDPTH, rx_end >> 8);
-    reg_write_blk(eth, ERDPTL, 0);
-    reg_write_blk(eth, ERDPTH, 0);
+    reg_write16_blk(eth, ERXRDPTL, rx_end);
+    reg_write16_blk(eth, ERDPTL, 0);
 
     // The packet counter can only be decremented, one frame at a time
     bank_set_blk(eth, 1);
@@ -1092,7 +1081,7 @@ void enc28j60_frame_rx_blk(enc28j60 *eth, uint32_t rx_info, void *buffer)
         if (to_read > RBM_MAX) {
             to_read = RBM_MAX;
         }
-        mem_read_blk(eth, to_read, ptr);
+        mem_read_blk(eth, (uint8_t)to_read, ptr);
         ptr += to_read;
         remaining -= to_read;
     }
@@ -1102,12 +1091,10 @@ void enc28j60_frame_rx_blk(enc28j60 *eth, uint32_t rx_info, void *buffer)
 
     // RX read pointer; it frees the space up to the end of this frame
     uint16_t rdpt = rx_read_pointer(eth, next_packet);
-    reg_write_blk(eth, ERXRDPTL, rdpt);
-    reg_write_blk(eth, ERXRDPTH, rdpt >> 8);
+    reg_write16_blk(eth, ERXRDPTL, rdpt);
 
     // RBM read pointer
-    reg_write_blk(eth, ERDPTL, next_packet);
-    reg_write_blk(eth, ERDPTH, next_packet >> 8);
+    reg_write16_blk(eth, ERDPTL, next_packet);
 
     // Decrement the packet counter
     reg_bits_set_blk(eth, ECON2, PKTDEC);
@@ -1144,12 +1131,10 @@ void enc28j60_frame_discard_blk(enc28j60 *eth, uint32_t rx_info)
 
     // RX read pointer; it frees the space up to the end of this frame
     uint16_t rdpt = rx_read_pointer(eth, next_packet);
-    reg_write_blk(eth, ERXRDPTL, rdpt);
-    reg_write_blk(eth, ERXRDPTH, rdpt >> 8);
+    reg_write16_blk(eth, ERXRDPTL, rdpt);
 
     // RBM read pointer
-    reg_write_blk(eth, ERDPTL, next_packet);
-    reg_write_blk(eth, ERDPTH, next_packet >> 8);
+    reg_write16_blk(eth, ERDPTL, next_packet);
 
     // Decrement the packet counter
     reg_bits_set_blk(eth, ECON2, PKTDEC);

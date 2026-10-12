@@ -177,7 +177,7 @@ bool PicoENC28J60::begin()
 
     // The receive buffer needs an even size (silicon errata: ERXRDPT must be
     // odd) and both RAM areas must hold a full frame.
-    uint16_t rx = _config.rx_buffer_size & ~1u;
+    uint16_t rx = (uint16_t)(_config.rx_buffer_size & ~1u);
     if (rx < RX_SIZE_MIN)
         rx = RX_SIZE_MIN;
     if (rx > RX_SIZE_MAX)
@@ -490,7 +490,7 @@ uint16_t PicoENC28J60::receiveFrame(uint8_t *buffer, uint16_t max_len)
     }
 
     enc28j60 *eth = driver(_eth);
-    uint16_t frame_len = ENC28J60_RX_SIZE(rx_info) - ETH_FCS_LEN;
+    uint16_t frame_len = (uint16_t)(ENC28J60_RX_SIZE(rx_info) - ETH_FCS_LEN);
     if (frame_len > max_len) {
         // Does not fit the caller's buffer: drop it
         enc28j60_frame_discard_blk(eth, rx_info);

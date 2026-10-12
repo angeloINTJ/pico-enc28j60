@@ -200,11 +200,12 @@ jobs:
           add_subdirectory($GITHUB_WORKSPACE/src enc28j60)
           add_executable(smoke main.c)
           target_compile_options(smoke PRIVATE -Wall -Wextra -Werror)
-          # the static analyzer of GCC on the driver only: the SDK has findings of its own
+          # the static analyzer of GCC and the conversion warnings on the driver
+          # only: the SDK has findings of its own
           set_source_files_properties(
             $GITHUB_WORKSPACE/src/enc28j60-driver.c
             $GITHUB_WORKSPACE/src/enc28j60-cmd.c
-            PROPERTIES COMPILE_OPTIONS "-fanalyzer")
+            PROPERTIES COMPILE_OPTIONS "-fanalyzer;-Wconversion")
           target_link_libraries(smoke pico_stdlib pico_enc28j60_driver)
           EOF
           cat > "$RUNNER_TEMP/smoke/main.c" <<EOF
