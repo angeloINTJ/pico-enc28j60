@@ -717,25 +717,25 @@ def ceil_div(a, b):
 
 # The most commands that each step of COST may take, worked out by reading the code (src/PicoENC28J60.cpp,
 # src/enc28j60-driver.c, src/enc28j60-cmd.h). Every register or buffer helper that ends in enc28j60_execute_blocking()
-# is one command, except bank_set_blk() (clear BSEL1:BSEL0 in ECON1, then set the bank) and reg_write16_blk() (the low
-# byte, then the high one), which are two:
+# is one command, except reg_write16_blk() (the low byte, then the high one), which is two, and bank_set_blk(), which is
+# one for banks 0 and 3 (clear both BSEL bits, or set both) and two for banks 1 and 2 (clear both, then set one):
 #   available() = enc28j60_rx_count_blk() = bank_set_blk(1) 2 + read EPKTCNT 1                                  = 3
 #   receiveFrame() of a frame of rx_len bytes, which is what it returns:
 #       _readRxInfo(): the packet count again 3 + the 6 bytes of header, one RBM 1                               = 4
 #       enc28j60_frame_rx_blk(): the data in reads of RBM_MAX = 31 bytes at most                  ceil(rx_len / 31)
-#           bank_set_blk(0) 2 + ERXRDPT 2 + ERDPT 2 + ECON2.PKTDEC 1                                             = 7
-#       = 11 + ceil(rx_len / 31). The S of this formula is rx_len, not the byte count in the header of the chip: that
+#           bank_set_blk(0) 1 + ERXRDPT 2 + ERDPT 2 + ECON2.PKTDEC 1                                             = 6
+#       = 10 + ceil(rx_len / 31). The S of this formula is rx_len, not the byte count in the header of the chip: that
 #       one includes the 4 bytes of the FCS, and receiveFrame() rewrites it as size - 4 before enc28j60_frame_rx_blk()
 #       reads, so the reads are ceil((S_header - 4) / 31). For a frame of 62 bytes (66 in the header) they are 2, not 3.
-#   enc28j60_frame_upload_blk() of up_len bytes: bank_set_blk(0) 2 + EWRPT 2 + the control byte, one WBM 1     = 5
+#   enc28j60_frame_upload_blk() of up_len bytes: bank_set_blk(0) 1 + EWRPT 2 + the control byte, one WBM 1     = 4
 #       then the frame in writes of WBM_MAX = 30 bytes at most                                    ceil(up_len / 30)
-#       = 5 + ceil(up_len / 30)
-#   enc28j60_frame_tx_blk(): bank_set_blk(0) 2 + set TXRST 1 + clear TXRST 1 + clear TXIF and TXERIF 1 + ETXST 2
-#       + ETXND 2 + set TXRTS 1                                                                              = 10
+#       = 4 + ceil(up_len / 30)
+#   enc28j60_frame_tx_blk(): bank_set_blk(0) 1 + set TXRST 1 + clear TXRST 1 + clear TXIF and TXERIF 1 + ETXST 2
+#       + ETXND 2 + set TXRTS 1                                                                               = 9
 # The wait after the start is not in the budget: it reads EIR until the frame is out, as many times as the wire takes,
 # and clears TXRTS once, so its commands are eir + 1, which cost_problems() compares with the reads the driver counted.
 def cost_budget(rx_len, up_len):
-    return {"avail": 3, "rx": 11 + ceil_div(rx_len, 31), "up": 5 + ceil_div(up_len, 30), "start": 10}
+    return {"avail": 3, "rx": 10 + ceil_div(rx_len, 31), "up": 4 + ceil_div(up_len, 30), "start": 9}
 
 
 def cost_over(d):

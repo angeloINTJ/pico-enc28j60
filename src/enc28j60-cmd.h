@@ -348,13 +348,18 @@ static inline void reg_bits_set_blk(enc28j60 *eth, uint8_t addr, uint8_t data)
     enc28j60_execute_blocking(eth, cmd, NULL, NULL);
 }
 
-//! Set the active register bank
+//! Set the active register bank: BSEL1:BSEL0 in ECON1 (data sheet, section
+//! 3.1). Bank 0 is both bits cleared and bank 3 both set, one command each;
+//! banks 1 and 2 clear both, then set one.
 static inline void bank_set_blk(enc28j60 *eth, uint8_t bank)
 {
-    // Section 3.1 of the manual
-    // Clearing BSEL1:BSEL0 in ECON1
-    reg_bits_clear_blk(eth, ECON1, 0x3);
-    reg_bits_set_blk(eth, ECON1, bank & 0x3);
+    bank &= 0x3;
+    if (bank != 3) {
+        reg_bits_clear_blk(eth, ECON1, 0x3);
+    }
+    if (bank != 0) {
+        reg_bits_set_blk(eth, ECON1, bank);
+    }
 }
 
 //! Read an ETH register
