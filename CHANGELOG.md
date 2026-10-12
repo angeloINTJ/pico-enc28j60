@@ -32,8 +32,9 @@ silicon errata. The lwIP interface without the INT pin answers faster.
   `enc28j60_frame_send_blk()` and `enc28j60_tx_status_blk()`, which gives the transmit
   status vector of a frame.
 * `extras/bench`: tests for the configuration errors, a PIO without room, the transmit
-  status, sharing the PIO with `SerialPIO`, an SPI transfer that stalls, and `end()`
-  followed by `begin()`.
+  status, sharing the PIO with `SerialPIO`, an SPI transfer that stalls, `end()` followed
+  by `begin()`, frames of all lengths with the longest receive buffer, and a chip that was
+  reset behind the back of the driver.
 * `extras/bench/BenchLwip` and `benchlwip.py`: tests of the lwIP interface on the
   hardware, with the PC on the other side: DHCP, ping both ways, TCP and UDP servers,
   a TCP client, DNS, a static address, `end()` followed by `begin()`, fragmented
@@ -88,7 +89,7 @@ silicon errata. The lwIP interface without the INT pin answers faster.
   default) when nothing arrives, and a frame sent from your code brings the next look
   forward. A fixed period made the time of a request depend on where the timer fell
   relative to the answer of the peer: 13 ms or 18 ms for the same page on the bench,
-  10 ms now. An idle line costs what it did.
+  10 to 11 ms now. An idle line costs what it did.
 * `PicoENC28J60lwIP` tells lwIP when the link goes down and up. When the cable comes
   back lwIP asks the DHCP server again, so a board moved to another network gets an
   address there at once and not when the lease comes up for renewal; before, lwIP

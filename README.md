@@ -371,7 +371,7 @@ every millisecond right after a frame went out or came in, backing off to 5 ms
 again when nothing arrives. The peer's answer to a frame is usually on its way,
 and a fixed period made the time of a request depend on where the timer happened to
 fall (13 ms or 18 ms for the same page on the bench); with the adaptive period it
-is 10 ms.
+is 10 to 11 ms.
 
 ---
 
