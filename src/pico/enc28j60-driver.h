@@ -187,7 +187,8 @@ bool enc28j60_irq_is_rx(uint8_t flags);
 //! Check if the interrupt is the receive error interrupt
 bool enc28j60_irq_is_rx_err(uint8_t flags);
 
-//! Disable the interrupt and get the interrupt flags
+//! Disable the interrupt and get the interrupt flags; PKTIF comes from the
+//! packet counter, as in enc28j60_irq_flags_blk()
 uint8_t enc28j60_irq_flags(enc28j60 *eth);
 
 //! Acknowledge and enable the interrupt

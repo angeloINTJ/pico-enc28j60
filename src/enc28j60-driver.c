@@ -587,10 +587,14 @@ bool enc28j60_recover(enc28j60 *eth)
 //! Silicon errata, issue 6: EIR.PKTIF does not reliably tell if a packet is
 //! pending, while the packet counter does. The INT pin is not affected: it
 //! does go low when a packet arrives and the interrupt is enabled.
+static uint8_t packet_flag_from_count(uint8_t eir, uint8_t count)
+{
+    return count ? (uint8_t)(eir | PKTIF) : (uint8_t)(eir & (uint8_t)~PKTIF);
+}
+
 static uint8_t eir_with_packet_flag(enc28j60 *eth, uint8_t eir)
 {
-    return enc28j60_rx_count_blk(eth) ? (uint8_t)(eir | PKTIF) :
-                                        (uint8_t)(eir & (uint8_t)~PKTIF);
+    return packet_flag_from_count(eir, enc28j60_rx_count_blk(eth));
 }
 
 uint8_t enc28j60_irq_flags_blk(enc28j60 *eth)
@@ -670,14 +674,20 @@ bool enc28j60_irq_is_rx_err(uint8_t flags)
 
 uint8_t enc28j60_irq_flags(enc28j60 *eth)
 {
-    // According to the section 12 of the manual
+    // According to the section 12 of the manual, and PKTIF from the packet
+    // counter of bank 1, as in enc28j60_irq_flags_blk()
     uint8_t flags = 0;
+    uint8_t count = 0;
     enc28j60_cmd_buf_reset(eth);
     enc28j60_cmd_buf_encode_cmd(eth, BFC_CMD(EIE, INTIE), NULL);
     enc28j60_cmd_buf_encode_cmd(eth, RCR_E_CMD(EIR), NULL);
+    enc28j60_cmd_buf_encode_cmd(eth, BFC_CMD(ECON1, 0x3), NULL);
+    enc28j60_cmd_buf_encode_cmd(eth, BFS_CMD(ECON1, 0x1), NULL);
+    enc28j60_cmd_buf_encode_cmd(eth, RCR_E_CMD(EPKTCNT), NULL);
     enc28j60_cmd_buf_execute(eth);
     enc28j60_cmd_buf_decode_rcr(eth, true, &flags);
-    return flags;
+    enc28j60_cmd_buf_decode_rcr(eth, true, &count);
+    return packet_flag_from_count(flags, count);
 }
 
 void enc28j60_irq_ack(enc28j60 *eth, uint8_t flags)
