@@ -5,10 +5,20 @@
 Robustness of the driver: it no longer hangs when the PIO does not run, shares the PIO
 with the rest of the sketch, reports why it could not start, and follows more of the
 silicon errata. The lwIP interface without the INT pin answers faster, and TCP no
-longer stalls when a peer sends a window of full-size segments.
+longer stalls when a peer sends a window of full-size segments. The SPI link is more
+than twice as fast.
 
 ### Added
 
+* `ENC28J60Config::spi_hz` (`enc28j60_config.spi_hz` in the C driver) is the SPI clock,
+  from 100 kHz to 20 MHz, the limit of the chip; 10 MHz by default. It used to be fixed
+  at 3.5 MHz. The PIO program was rewritten for it: it takes 4 PIO clocks for each SPI
+  clock instead of 10, and keeps the chip select timing that the data sheet asks for
+  (table 16-6) at any clock. The old one let go of the chip select 143 ns after a read
+  of the MAC and MII registers, where the data sheet asks for 210 ns, and less at a
+  faster clock. On the bench a full-size frame is read in 1.3 ms at 10 MHz (3.7 ms at
+  3.5 MHz with the new program, 0.7 ms at 20 MHz), and 2000 rounds of random data
+  through every kind of access came back intact at every clock from 1 to 20 MHz.
 * `PicoENC28J60lwIP::droppedNoBuffer()` counts the frames that lwIP had no buffer for and
   dropped.
 * `PicoENC28J60::end()` stops the chip and gives back the state machine, the pins and
@@ -36,8 +46,11 @@ longer stalls when a peer sends a window of full-size segments.
   status vector of a frame.
 * `extras/bench`: tests for the configuration errors, a PIO without room, the transmit
   status, sharing the PIO with `SerialPIO`, an SPI transfer that stalls, `end()` followed
-  by `begin()`, frames of all lengths with the longest receive buffer, and a chip that was
-  reset behind the back of the driver.
+  by `begin()`, frames of all lengths with the longest receive buffer, a chip that was
+  reset behind the back of the driver, and the rest of the public API that nothing
+  exercised: `setMACAddress()`, `discardFrame()` and the functions that only look,
+  `hasLinkChange()`, the interrupt callback and `poll()`, an overflow of the receive buffer
+  on purpose, and the SPI clock. `--spi-hz` runs every test at another clock.
 * `extras/bench/BenchLwip` and `benchlwip.py`: tests of the lwIP interface on the
   hardware, with the PC on the other side: DHCP, ping both ways, TCP and UDP servers,
   a TCP client, bulk transfers through three connections at once, DNS, a static address,
@@ -63,12 +76,13 @@ longer stalls when a peer sends a window of full-size segments.
   time, and the connection stalled until a timeout of the peer ended it. The interface
   receives every frame in buffers from the pool of lwIP now, which are not taken from
   that heap. On the bench, three connections at once, each echoing 64 kB, stalled at
-  least one of them in each of the four attempts (a round took 49 s in the end) and now
-  finish in two seconds; a single connection echoing 200 kB went from 49 kB/s to
-  207 kB/s. The slower clock hid the problem for a single connection (80 transfers of
-  64 kB in a row did not stall at 3.5 MHz): the buffer of the chip overflowed before the
-  heap did. With a faster clock 1 of the first 12 stalled at 8 MHz and 3 of the first 25
-  at 16 MHz.
+  least one of them in each of the four attempts (a round took 49 s in the end); now the
+  slowest of two rounds takes 2 to 5 seconds, with a few frames that lwIP had no buffer
+  for (`droppedNoBuffer()`) that the peer sends again. A single connection echoing
+  200 kB went from 49 kB/s to about 180 kB/s. The slower clock hid the problem for a
+  single connection (80 transfers of 64 kB in a row did not stall at 3.5 MHz): the
+  buffer of the chip overflowed before the heap did. With a faster clock 1 of the first
+  12 stalled at 8 MHz and 3 of the first 25 at 16 MHz.
 * The driver never claimed its PIO state machine. The Arduino core gives the first free
   one to `SerialPIO` and the like; it fills `pio1` first, so with five `SerialPIO`
   objects the fifth landed on the state machine of the driver and every call to the
@@ -107,6 +121,16 @@ longer stalls when a peer sends a window of full-size segments.
 
 ### Changed
 
+* The SPI clock is 10 MHz by default, where it was 3.5 MHz. The errata (issue 1) ask for
+  8 MHz or more: the MAC registers of the revisions B1 and B4 are unreliable below it.
+  The PIO divides the system clock by a fraction, so at 125 MHz an 8 MHz clock has
+  periods of 120 and 128 ns, mostly the longer one, and runs below 8 MHz most of the
+  time; at 10 MHz they are 96 and 104 ns, all shorter than the 125 ns of 8 MHz. If your
+  wiring cannot take it, set `ENC28J60Config::spi_hz` lower. On the bench the round trip
+  of a UDP echo went from 4.4 to 2.4 ms, a page of the web example from 14 to 11 ms
+  (median), and the receive flood of `bench.py` got 960 of its 3000 frames through the
+  buffer of the chip instead of 384. At 20 MHz the whole of `bench.py` and
+  `benchlwip.py` passed, the echo taking 1.8 ms.
 * `PicoENC28J60lwIP` without the INT pin looks at the chip every millisecond right after
   a frame went out or came in, backing off to the period of `setPollPeriod()` (5 ms by
   default) when nothing arrives, and a frame sent from your code brings the next look

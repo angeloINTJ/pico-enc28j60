@@ -271,9 +271,9 @@ keep that receive loop.
 
 Give it a config with `irq_pin` set and it is driven by the INT line: the interrupt
 handler only wakes the lwIP context up, which then reads the frames, so the chip is
-never touched from interrupt context. On the bench that took the median time of a
-`GET /` from 16 ms to 11 ms and made an idle network free of SPI traffic. The timer of
-`setPollPeriod()` remains as a safety net (20 ms then).
+never touched from interrupt context. An idle network is free of SPI traffic then, and
+the median time of a `GET /` on the bench is 10 ms, against 11 ms when polled. The timer
+of `setPollPeriod()` remains as a safety net (20 ms then).
 
 Without the INT pin the chip is polled: every 5 ms while the line is quiet, and every
 millisecond right after a frame went out or came in, backing off to 5 ms again when
@@ -305,10 +305,13 @@ What it does not do:
 
  * It is 10 Mbit/s and **half duplex** only, as the chip is. The link partner has to
    detect that by itself, which every switch and router does.
- * SPI runs at 3.5 MHz, so a full-size frame takes about 3.5 ms to move between the
-   chip and the Pico, and the throughput is well below the 10 Mbit/s of the wire. The
-   clock is worked out from the system clock when `begin()` runs (and again when the
-   chip is started over), so change the system clock before `begin()`, not after.
+ * SPI runs at 10 MHz unless you set `spi_hz`. A full-size frame then takes 1.3 ms to
+   move between the chip and the Pico (3.7 ms at 3.5 MHz, 0.7 ms at 20 MHz, the limit
+   of the chip), and the throughput is below the 10 Mbit/s of the wire. How fast your
+   wiring lets it go is for you to find out: on the bench of the author every test of
+   `bench.py` and `benchlwip.py` passed at 20 MHz. The clock is worked out from the
+   system clock when `begin()` runs (and again when the chip is started over), so
+   change the system clock before `begin()`, not after.
  * The receive filter is fixed: a frame is delivered if its CRC is good and it is
    addressed to the board, to everybody (broadcast) or to a group (multicast). There
    is no promiscuous mode, and frames with a bad CRC never get to you.
@@ -319,11 +322,14 @@ What it does not do:
    Pico 2 W, but have not been run on them. The FreeRTOS+TCP driver is the one of the
    original project, and was not built or run here.
  * The receive buffer of the chip is small (4 KB, 6.5 KB at most with
-   `rx_buffer_size = 0x1A00`; the transmit side only needs one frame) and reading a
-   frame from it takes 3.5 ms, while one can arrive every 1.2 ms. A peer that sends a
-   window of data at once, like several bulk TCP transfers at the same time, overflows
-   it, and TCP recovers slowly: one connection echoes 200 kB at about 50 kB/s on the
-   bench, and requests and answers are fine.
+   `rx_buffer_size = 0x1A00`; the transmit side only needs one frame), and a full-size
+   frame can arrive every 1.2 ms, while at the default clock reading one takes 1.3 ms.
+   A peer that sends frames back to back faster than that overflows the buffer, and the
+   frames it cannot hold are lost (`INT_RX_ERROR` says so); TCP sends them again. At
+   20 MHz the flood of the bench no longer overflowed it. With the default clock, one
+   TCP connection echoes 200 kB in about a second on the bench, and three at once echo
+   64 kB each in two to five seconds, with a few frames that lwIP had no buffer for on
+   the way (`droppedNoBuffer()`), which the peer sends again.
 
 ## Examples
 
@@ -350,7 +356,7 @@ board and your LAN, driven by Python scripts on the PC:
 
 | Script | Sketch | What it checks |
 |--------|--------|----------------|
-| `bench.py` | `BenchTest` | the raw class: ping, receive and echo streams, transmit streams, a long soak, a receiver overload, configuration errors, a PIO that does not run, a chip that is reset, and the INT pin |
+| `bench.py` | `BenchTest` | the raw class: ping, receive and echo streams, transmit streams, a long soak, a receiver overload, the SPI clock from 1 to 20 MHz, configuration errors, a PIO that does not run, a chip that is reset, the MAC address, the functions that only look and `discardFrame()`, the link flag, the interrupt callback, and the INT pin |
 | `benchlwip.py` | `BenchLwip` | the lwIP interface: DHCP, ping both ways, TCP and UDP servers and clients, bulk transfers through several connections, a cable that is pulled out, a chip that is reset, a static address, repeated `end()` and `begin()` |
 | `webtest.py` | `WebServerLedToggle` | the web example: sequential and parallel requests, 100 toggles, a soak |
 
