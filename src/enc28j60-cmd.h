@@ -230,8 +230,11 @@
 // MACON1: MAC Receive Enable
 #define MARXEN 0x1
 
-// MACON3: PADCFG and TXCRCEN
-#define PADCRC 0xf0
+// MACON3: PADCFG = 001 and TXCRCEN: frames shorter than 60 bytes are padded
+// with zeros up to 60 and the CRC is appended, which makes the 64 bytes of the
+// shortest frame that the standard allows. PADCFG = 111 would pad up to 64
+// bytes first and put the CRC after them.
+#define PADCRC 0x30
 
 // MACON4: DEFER
 #define DEFER 0x40

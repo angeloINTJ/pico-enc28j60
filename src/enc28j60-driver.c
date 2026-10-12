@@ -47,8 +47,9 @@ enc28j60_config *enc28j60_get_default_config()
         panic("Failed to allocate memory for ENC28J60 config");
     }
 
-    cfg->pio = pio0;
-    cfg->sm = 0;
+    // Let the driver find a free state machine, see enc28j60_config
+    cfg->pio = NULL;
+    cfg->sm = ENC28J60_SM_ANY;
     cfg->miso_pin = 16;
     cfg->mosi_pin = 17;
     cfg->sclk_pin = 18;
@@ -77,23 +78,140 @@ enc28j60_config *enc28j60_get_default_config()
     return cfg;
 }
 
-// The SPI program is loaded once per PIO so that the driver can be initialized
-// again after a failure without running out of instruction memory.
+// The SPI program is loaded once per PIO and shared by the instances of the
+// driver that run on it; the last one to leave removes it. That way the driver
+// can be started again after a failure, or after enc28j60_deinit(), without
+// running out of instruction memory.
 static struct {
-    bool loaded;
+    uint users;
     uint offset;
 } spi_program[NUM_PIOS];
 
-static void initialize_io(enc28j60_config *cfg)
+//! Do the pins, the buffer and the choice of the state machine make sense?
+static enc28j60_status validate_config(const enc28j60_config *cfg)
 {
-    // Configure the PIO program
-    uint pio_idx = pio_get_index(cfg->pio);
-    if (!spi_program[pio_idx].loaded) {
-        spi_program[pio_idx].offset =
-            pio_add_program(cfg->pio, &enc28j60_spi_program);
-        spi_program[pio_idx].loaded = true;
+    // The PIO drives the four SPI lines, which are different GPIOs below 32
+    const uint spi_pins[] = { cfg->mosi_pin, cfg->miso_pin, cfg->sclk_pin,
+                              cfg->cs_pin };
+    const size_t count = sizeof(spi_pins) / sizeof(spi_pins[0]);
+    for (size_t i = 0; i < count; ++i) {
+        if (spi_pins[i] >= 32 || spi_pins[i] >= NUM_BANK0_GPIOS) {
+            return ENC28J60_ERR_CONFIG;
+        }
+        for (size_t j = 0; j < i; ++j) {
+            if (spi_pins[i] == spi_pins[j]) {
+                return ENC28J60_ERR_CONFIG;
+            }
+        }
     }
-    uint offset = spi_program[pio_idx].offset;
+    if (cfg->irq_cb != NULL &&
+        (cfg->irq_pin >= NUM_BANK0_GPIOS || cfg->irq_pin == cfg->mosi_pin ||
+         cfg->irq_pin == cfg->miso_pin || cfg->irq_pin == cfg->sclk_pin ||
+         cfg->irq_pin == cfg->cs_pin)) {
+        return ENC28J60_ERR_CONFIG;
+    }
+
+    // The receive buffer ends on an odd address (silicon errata, issue 14), so
+    // its size is even; the rest of the 8 KB is the transmit buffer
+    if (cfg->rx_size == 0 || cfg->rx_size % 2 != 0 ||
+        cfg->rx_size >= RAM_SIZE) {
+        return ENC28J60_ERR_CONFIG;
+    }
+
+    if (cfg->pio != NULL) {
+        bool known = false;
+        for (uint i = 0; i < NUM_PIOS; ++i) {
+            known = known || cfg->pio == pio_get_instance(i);
+        }
+        if (!known ||
+            (cfg->sm != ENC28J60_SM_ANY && cfg->sm >= NUM_PIO_STATE_MACHINES)) {
+            return ENC28J60_ERR_CONFIG;
+        }
+    }
+    return ENC28J60_OK;
+}
+
+//! Claim a state machine, so that nobody else takes it, and make sure that its
+//! PIO has the SPI program. Fills in the PIO and the state machine of the
+//! configuration if they were left to the driver.
+static enc28j60_status acquire_pio(enc28j60_config *cfg)
+{
+    if (cfg->pio == NULL) {
+        // Prefer a PIO that has the program already, then any that has room
+        bool found = false;
+        for (int pass = 0; pass < 2 && !found; ++pass) {
+            for (uint i = 0; i < NUM_PIOS && !found; ++i) {
+                PIO pio = pio_get_instance(i);
+                bool loaded = spi_program[i].users > 0;
+                if (loaded != (pass == 0)) {
+                    continue;
+                }
+                if (!loaded &&
+                    !pio_can_add_program(pio, &enc28j60_spi_program)) {
+                    continue;
+                }
+                int sm = pio_claim_unused_sm(pio, false);
+                if (sm >= 0) {
+                    cfg->pio = pio;
+                    cfg->sm = (uint)sm;
+                    found = true;
+                }
+            }
+        }
+        if (!found) {
+            return ENC28J60_ERR_PIO_SPACE;
+        }
+    } else if (cfg->sm == ENC28J60_SM_ANY) {
+        int sm = pio_claim_unused_sm(cfg->pio, false);
+        if (sm < 0) {
+            return ENC28J60_ERR_PIO_BUSY;
+        }
+        cfg->sm = (uint)sm;
+    } else {
+        if (pio_sm_is_claimed(cfg->pio, cfg->sm)) {
+            return ENC28J60_ERR_PIO_BUSY;
+        }
+        pio_sm_claim(cfg->pio, cfg->sm);
+    }
+
+    uint pio_idx = pio_get_index(cfg->pio);
+    if (spi_program[pio_idx].users == 0) {
+        // A negative result is an error: the instruction memory is full
+        int offset = pio_add_program(cfg->pio, &enc28j60_spi_program);
+        if (offset < 0) {
+            pio_sm_unclaim(cfg->pio, cfg->sm);
+            return ENC28J60_ERR_PIO_SPACE;
+        }
+        spi_program[pio_idx].offset = (uint)offset;
+    }
+    ++spi_program[pio_idx].users;
+    return ENC28J60_OK;
+}
+
+//! Give back what acquire_pio() took, and the pins
+static void release_pio(const enc28j60_config *cfg)
+{
+    uint pio_idx = pio_get_index(cfg->pio);
+    pio_sm_set_enabled(cfg->pio, cfg->sm, false);
+    pio_sm_unclaim(cfg->pio, cfg->sm);
+    if (--spi_program[pio_idx].users == 0) {
+        pio_remove_program(cfg->pio, &enc28j60_spi_program,
+                           spi_program[pio_idx].offset);
+    }
+    hw_clear_bits(&cfg->pio->input_sync_bypass, 1u << cfg->miso_pin);
+    gpio_deinit(cfg->mosi_pin);
+    gpio_deinit(cfg->miso_pin);
+    gpio_deinit(cfg->sclk_pin);
+    gpio_deinit(cfg->cs_pin);
+}
+
+//! Run the SPI program on the state machine, from the start. It also puts the
+//! lines in their idle state, which ends a transfer that was cut short, so it
+//! is how a stopped or stuck state machine is brought back.
+static void start_sm(const enc28j60_config *cfg)
+{
+    uint offset = spi_program[pio_get_index(cfg->pio)].offset;
+    pio_sm_set_enabled(cfg->pio, cfg->sm, false);
     pio_sm_config c = enc28j60_spi_program_get_default_config(offset);
 
     // out pins: MOSI (1 pin)
@@ -134,20 +252,38 @@ static void initialize_io(enc28j60_config *cfg)
     // Run the program
     pio_sm_init(cfg->pio, cfg->sm, offset, &c);
     pio_sm_set_enabled(cfg->pio, cfg->sm, true);
+}
 
-    // Initialize the GPIO interrupt
-    if (cfg->irq_cb) {
-        irq_arg_chain *arg = calloc(1, sizeof(irq_arg_chain));
-        if (arg == NULL) {
-            panic("Failed to allocate irq_arg_chain object for gpio");
+//! Call cfg->irq_cb when the INT pin falls. Returns false if out of memory.
+static bool add_gpio_irq(const enc28j60_config *cfg)
+{
+    irq_arg_chain *arg = calloc(1, sizeof(irq_arg_chain));
+    if (arg == NULL) {
+        return false;
+    }
+    arg->gpio = cfg->irq_pin;
+    arg->data = cfg->irq_data;
+    arg->cb = cfg->irq_cb;
+    arg->next = irq_args.next;
+    irq_args.next = arg;
+    gpio_set_irq_enabled_with_callback(cfg->irq_pin, GPIO_IRQ_EDGE_FALL, true,
+                                       irq_handler);
+    return true;
+}
+
+//! The opposite of add_gpio_irq()
+static void remove_gpio_irq(const enc28j60_config *cfg)
+{
+    // Off first, so that the handler is not walking the list while we change it
+    gpio_set_irq_enabled(cfg->irq_pin, GPIO_IRQ_EDGE_FALL, false);
+    for (irq_arg_chain **link = &irq_args.next; *link != NULL;
+         link = &(*link)->next) {
+        irq_arg_chain *entry = *link;
+        if (entry->gpio == cfg->irq_pin && entry->data == cfg->irq_data) {
+            *link = entry->next;
+            free(entry);
+            break;
         }
-        arg->gpio = cfg->irq_pin;
-        arg->data = cfg->irq_data;
-        arg->cb = cfg->irq_cb;
-        arg->next = irq_args.next;
-        irq_args.next = arg;
-        gpio_set_irq_enabled_with_callback(cfg->irq_pin, GPIO_IRQ_EDGE_FALL,
-                                           true, irq_handler);
     }
 }
 
@@ -165,7 +301,7 @@ static bool initialize_enc28j60(enc28j60 *eth, enc28j60_config *cfg)
     // of hanging the caller.
     absolute_time_t deadline = make_timeout_time_ms(100);
     while (!(reg_read_e_blk(eth, ESTAT) & CLKRDY)) {
-        if (time_reached(deadline)) {
+        if (eth->io_error || time_reached(deadline)) {
             return false;
         }
     }
@@ -269,32 +405,98 @@ static bool initialize_enc28j60(enc28j60 *eth, enc28j60_config *cfg)
 
 enc28j60 *enc28j60_init(enc28j60_config *cfg)
 {
+    return enc28j60_init_status(cfg, NULL);
+}
+
+enc28j60 *enc28j60_init_status(enc28j60_config *cfg, enc28j60_status *status)
+{
     if (cfg == NULL) {
         panic("Missing ENC28J60 config");
     }
 
-    enc28j60 *eth = calloc(1, sizeof(enc28j60));
+    // What the caller asked for, to put back if this fails, so that the same
+    // configuration can be tried again
+    PIO requested_pio = cfg->pio;
+    uint requested_sm = cfg->sm;
+    bool irq_added = false;
+    enc28j60 *eth = NULL;
+
+    enc28j60_status result = validate_config(cfg);
+    if (result != ENC28J60_OK) {
+        goto restore;
+    }
+
+    result = acquire_pio(cfg);
+    if (result != ENC28J60_OK) {
+        goto restore;
+    }
+
+    eth = calloc(1, sizeof(enc28j60));
     if (eth == NULL) {
-        panic("Failed to allocate memory for ENC28J60 object");
+        result = ENC28J60_ERR_NOMEM;
+        goto release;
     }
     eth->cfg = cfg;
     eth->wptr = cfg->rx_size;
     eth->dev_rptr = eth->wptr;
 
-    initialize_io(cfg);
-    if (!initialize_enc28j60(eth, cfg)) {
-        if (cfg->irq_cb) {
-            gpio_set_irq_enabled(cfg->irq_pin, GPIO_IRQ_EDGE_FALL, false);
+    start_sm(cfg);
+    if (cfg->irq_cb) {
+        irq_added = add_gpio_irq(cfg);
+        if (!irq_added) {
+            result = ENC28J60_ERR_NOMEM;
+            goto unwind;
         }
-        free(eth);
-        return NULL;
+    }
+    if (!initialize_enc28j60(eth, cfg)) {
+        result = eth->io_error ? ENC28J60_ERR_IO : ENC28J60_ERR_NO_CHIP;
+        goto unwind;
     }
 
     if (cfg->notify.notify != NULL && cfg->notify.wait != NULL) {
         enc28j60_cmd_buf_init(eth);
     }
 
+    if (status != NULL) {
+        *status = ENC28J60_OK;
+    }
     return eth;
+
+unwind:
+    if (irq_added) {
+        remove_gpio_irq(cfg);
+    }
+    free(eth);
+release:
+    release_pio(cfg);
+restore:
+    cfg->pio = requested_pio;
+    cfg->sm = requested_sm;
+    if (status != NULL) {
+        *status = result;
+    }
+    return NULL;
+}
+
+const char *enc28j60_status_string(enc28j60_status status)
+{
+    switch (status) {
+    case ENC28J60_OK:
+        return "ok";
+    case ENC28J60_ERR_CONFIG:
+        return "invalid configuration: check the pins and the buffer size";
+    case ENC28J60_ERR_PIO_BUSY:
+        return "the PIO state machine is already in use";
+    case ENC28J60_ERR_PIO_SPACE:
+        return "no PIO has room for the SPI program and a free state machine";
+    case ENC28J60_ERR_NO_CHIP:
+        return "no ENC28J60 answers: check the wiring and the 3.3 V supply";
+    case ENC28J60_ERR_NOMEM:
+        return "out of memory";
+    case ENC28J60_ERR_IO:
+        return "the SPI transfer stalled: the PIO state machine does not run";
+    }
+    return "unknown error";
 }
 
 uint8_t enc28j60_revision_blk(enc28j60 *eth)
@@ -311,17 +513,59 @@ bool enc28j60_link_status_blk(enc28j60 *eth)
 
 void enc28j60_deinit(enc28j60 *eth)
 {
-    // Not implemented: the PIO program and the state machine stay in use, so
-    // the driver cannot be torn down and initialized again.
-    (void)eth;
+    if (eth == NULL) {
+        return;
+    }
+    enc28j60_config *cfg = eth->cfg;
+
+    // Quiet the chip, if it can be reached: no more frames, no more interrupts
+    if (!eth->io_error) {
+        reg_bits_clear_blk(eth, ECON1, RXEN);
+        reg_write_blk(eth, EIE, 0);
+    }
+    if (cfg->irq_cb) {
+        remove_gpio_irq(cfg);
+    }
+    release_pio(cfg);
+    free(eth);
+}
+
+bool enc28j60_io_failed(const enc28j60 *eth)
+{
+    return eth->io_error;
+}
+
+bool enc28j60_recover(enc28j60 *eth)
+{
+    enc28j60_config *cfg = eth->cfg;
+
+    // Whatever the state machine was doing, it begins again; the chip is then
+    // configured as at the start, which leaves both of its buffers empty
+    start_sm(cfg);
+    eth->io_error = false;
+    eth->wptr = cfg->rx_size;
+    eth->dev_rptr = eth->wptr;
+    if (!initialize_enc28j60(eth, cfg)) {
+        // Nothing answers; keep the transfers off until the next attempt
+        eth->io_error = true;
+        return false;
+    }
+    return true;
+}
+
+//! Silicon errata, issue 6: EIR.PKTIF does not reliably tell if a packet is
+//! pending, while the packet counter does. The INT pin is not affected: it
+//! does go low when a packet arrives and the interrupt is enabled.
+static uint8_t eir_with_packet_flag(enc28j60 *eth, uint8_t eir)
+{
+    return enc28j60_rx_count_blk(eth) ? (eir | PKTIF) : (eir & ~PKTIF);
 }
 
 uint8_t enc28j60_irq_flags_blk(enc28j60 *eth)
 {
     // According to the section 12 of the manual
     reg_bits_clear_blk(eth, EIE, INTIE);
-    uint8_t flags = reg_read_e_blk(eth, EIR);
-    return flags;
+    return eir_with_packet_flag(eth, reg_read_e_blk(eth, EIR));
 }
 
 void enc28j60_irq_phy_ack_blk(enc28j60 *eth)
@@ -346,7 +590,7 @@ uint8_t enc28j60_irq_status_blk(enc28j60 *eth)
 {
     // A plain read: unlike enc28j60_irq_flags_blk() this leaves the interrupt
     // output enabled, so it is safe to use for looking without acting
-    return reg_read_e_blk(eth, EIR);
+    return eir_with_packet_flag(eth, reg_read_e_blk(eth, EIR));
 }
 
 void enc28j60_irq_enable_blk(enc28j60 *eth, uint8_t sources)
@@ -568,29 +812,105 @@ void enc28j60_frame_tx_blk(enc28j60 *eth, uint32_t frame_id)
     reg_bits_set_blk(eth, ECON1, TXRTS);
 }
 
-bool enc28j60_frame_tx_wait_blk(enc28j60 *eth, uint32_t frame_id,
-                                uint32_t timeout_us)
+// The transmit status vector follows the last byte of a frame in the buffer
+#define TSV_SIZE 7
+
+// Its bit 29, the late collision, is bit 5 of the fourth byte
+#define TSV_LATE_COLLISION 0x20
+
+//! Wait until the transmission that was started ends, one way or another
+static enc28j60_tx_status tx_wait(enc28j60 *eth, uint32_t timeout_us)
 {
     absolute_time_t deadline = make_timeout_time_us(timeout_us);
-    bool sent = false;
-    do {
-        if (!(reg_read_e_blk(eth, ECON1) & TXRTS)) {
-            sent = true;
+    enc28j60_tx_status result;
+
+    while (true) {
+        uint8_t eir = reg_read_e_blk(eth, EIR);
+        if (eth->io_error) {
+            return ENC28J60_TX_IO;
+        }
+        // An abort is looked for first: the MAC raises TXIF as well when it
+        // gives up on a frame
+        if (eir & TXERIF) {
+            result = ENC28J60_TX_ABORTED;
             break;
         }
-    } while (!time_reached(deadline));
+        if (eir & TXIF) {
+            result = ENC28J60_TX_OK;
+            break;
+        }
+        if (time_reached(deadline)) {
+            result = ENC28J60_TX_TIMEOUT;
+            break;
+        }
+    }
 
-    if (!sent) {
+    // The request is over whatever happened. After an abort the transmit logic
+    // may not know it: this tells it (silicon errata, issue 13).
+    reg_bits_clear_blk(eth, ECON1, TXRTS);
+    if (result == ENC28J60_TX_TIMEOUT) {
         // Still transmitting after the timeout (medium busy or stuck
         // transmitter): stop it so the buffer space can be reused.
         reg_bits_set_blk(eth, ECON1, TXRST);
         reg_bits_clear_blk(eth, ECON1, TXRST);
         reg_bits_clear_blk(eth, EIR, TXERIF | TXIF);
     }
+    return result;
+}
+
+bool enc28j60_frame_tx_wait_blk(enc28j60 *eth, uint32_t frame_id,
+                                uint32_t timeout_us)
+{
+    bool sent = tx_wait(eth, timeout_us) == ENC28J60_TX_OK;
 
     // Release the buffer space either way
     enc28j60_frame_tx_confirm(eth, frame_id);
     return sent;
+}
+
+void enc28j60_tx_status_blk(enc28j60 *eth, uint32_t frame_id, uint8_t tsv[7])
+{
+    // Reading the vector moves the read pointer of the buffer, which the code
+    // that receives frames expects at the start of the next one: put it back
+    bank_set_blk(eth, 0);
+    uint16_t read_ptr = reg_read_e_blk(eth, ERDPTL);
+    read_ptr |= (uint16_t)reg_read_e_blk(eth, ERDPTH) << 8;
+    mem_read_at_blk(eth, TX_END(frame_id) + 1, TSV_SIZE, tsv);
+    reg_write_blk(eth, ERDPTL, read_ptr);
+    reg_write_blk(eth, ERDPTH, read_ptr >> 8);
+}
+
+enc28j60_tx_status enc28j60_frame_send_blk(enc28j60 *eth, uint32_t frame_id,
+                                           uint32_t timeout_us,
+                                           uint8_t max_retries,
+                                           uint8_t *retries)
+{
+    uint8_t attempts = 0;
+    enc28j60_tx_status result;
+
+    while (true) {
+        enc28j60_frame_tx_blk(eth, frame_id);
+        result = tx_wait(eth, timeout_us);
+        if (result != ENC28J60_TX_ABORTED || attempts >= max_retries) {
+            break;
+        }
+
+        // The MAC retries a frame after an ordinary collision by itself, but
+        // not after a late one: that is for us to do (silicon errata, issue
+        // 13). An abort for any other reason is final.
+        uint8_t tsv[TSV_SIZE];
+        enc28j60_tx_status_blk(eth, frame_id, tsv);
+        if (!(tsv[3] & TSV_LATE_COLLISION)) {
+            break;
+        }
+        ++attempts;
+    }
+
+    enc28j60_frame_tx_confirm(eth, frame_id);
+    if (retries != NULL) {
+        *retries = attempts;
+    }
+    return result;
 }
 
 void enc28j60_set_mac_blk(enc28j60 *eth, const uint8_t *mac)

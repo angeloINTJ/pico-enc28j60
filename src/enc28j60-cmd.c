@@ -10,6 +10,15 @@
 #include <hardware/pio.h>
 
 #include <stdlib.h>
+#include <string.h>
+
+// The state machine moves a byte through the FIFOs in about 2.3 us, which is
+// some 15 turns of the loop below. If neither FIFO moves for this many turns,
+// which is thousands of times longer and some milliseconds at any clock, it
+// does not run: another piece of code took it, or it was stopped. The turns are
+// counted rather than timed, so that an interrupt, or the other core locking
+// this one out while it writes to the flash, cannot be taken for a stall.
+#define STALL_SPINS 50000
 
 // Don't keep this function in flash
 void __time_critical_func(enc28j60_execute_blocking)(enc28j60 *eth,
@@ -28,6 +37,13 @@ void __time_critical_func(enc28j60_execute_blocking)(enc28j60 *eth,
     uint8_t data[4] = { cmd >> 24, cmd >> 16, cmd >> 8, cmd };
     const uint8_t *snd = data;
     uint8_t *rcv = dst;
+    uint32_t spins = 0;
+
+    // After a stall the state machine is left alone until enc28j60_recover()
+    // starts it again; reads give zeros rather than whatever the buffer held
+    if (eth->io_error) {
+        goto stalled;
+    }
 
     // For WBM, we first transmit the command header and then the data payload
     // from the source buffer skipping the data payload byte from the command
@@ -37,6 +53,9 @@ void __time_critical_func(enc28j60_execute_blocking)(enc28j60 *eth,
             if (!pio_sm_is_tx_fifo_full(eth->cfg->pio, eth->cfg->sm)) {
                 *txfifo = *snd++;
                 ++i;
+                spins = 0;
+            } else if (++spins > STALL_SPINS) {
+                goto stall;
             }
         }
         tx_remain = tx_sz - 1;
@@ -47,15 +66,31 @@ void __time_critical_func(enc28j60_execute_blocking)(enc28j60 *eth,
     // as necessary for SPI, although we don't have commands where reading
     // separately would actually block the PIO program
     while (tx_remain || rx_remain) {
+        bool progress = false;
         if (tx_remain && !pio_sm_is_tx_fifo_full(eth->cfg->pio, eth->cfg->sm)) {
             *txfifo = *snd++;
             --tx_remain;
+            progress = true;
         }
         if (rx_remain &&
             !pio_sm_is_rx_fifo_empty(eth->cfg->pio, eth->cfg->sm)) {
             *rcv++ = *rxfifo;
             --rx_remain;
+            progress = true;
         }
+        if (progress) {
+            spins = 0;
+        } else if (++spins > STALL_SPINS) {
+            goto stall;
+        }
+    }
+    return;
+
+stall:
+    eth->io_error = true;
+stalled:
+    if (rx_remain) {
+        memset(rcv, 0, rx_remain);
     }
 }
 
