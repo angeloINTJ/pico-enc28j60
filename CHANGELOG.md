@@ -11,6 +11,16 @@ the PIO program) are part of the repository now.
 
 ### Fixed
 
+* `spi_hz` near 20 MHz could make SPI periods shorter than the 50 ns that the chip
+  allows. The PIO divides the system clock by a fraction, which stretches some of its
+  clocks by one system clock, so with the system clock at 150 MHz (the default of the
+  Pico 2) 20 MHz gave periods of 46.7 and 53.3 ns. On the bench, an RP2040 built for
+  150 MHz got 9820 errors in 2000 rounds of data at 20 MHz, and none at 16 MHz or below.
+  The driver now lowers the clock until every period is at least 50 ns: 18.75 MHz at a
+  system clock of 150 MHz and 17.9 MHz at 125 MHz, where the same rounds came back
+  clean. The clock is also never faster than asked for any more (the divider used to be
+  rounded down). At 200 MHz, the default of arduino-pico for the Pico, nothing changes:
+  20 MHz is exact there.
 * An asynchronous call came back too early. `enc28j60_frame_rx()` reads the frame and
   then, in the same DMA list, moves the read pointers and decrements the packet counter;
   it returned as soon as the last byte of the frame was in, while those commands were

@@ -57,7 +57,10 @@ following fields:
  * cs_pin - slave select, defaults to 19
  * spi_hz - the SPI clock in Hz, from ENC28J60_SPI_HZ_MIN (100 kHz) to ENC28J60_SPI_HZ_MAX
            (20 MHz, the limit of the chip); 0 or the default is ENC28J60_SPI_HZ_DEFAULT
-           (10 MHz). The PIO runs at four times this, so the system clock has to allow it
+           (10 MHz). The PIO runs at four times this, so the system clock has to allow it.
+           The clock is never faster than asked for, and is lowered when the fractional
+           divider of the PIO would make a period shorter than 50 ns: with a system clock
+           of 150 MHz, the default of the Pico 2, 20 MHz becomes 18.75 MHz
  * irq_pin - defaults to 20
  * dma_irq - interrupt channel to handle DMA IRQs, defaults to 0
  * rx_size - the device has 8kB big buffer that is used for RX and TX queues the range

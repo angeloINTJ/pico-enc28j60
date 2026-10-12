@@ -236,6 +236,37 @@ static void release_pio(const enc28j60_config *cfg)
     gpio_deinit(cfg->cs_pin);
 }
 
+//! The divider of the state machine for an SPI clock, in 1/256 (the divider
+//! has 8 fractional bits). It is rounded up, so that the clock is never faster
+//! than asked for. A fractional divider stretches some PIO clocks by one system
+//! clock, so an SPI period, SPI_PIO_CLOCKS_PER_BIT PIO clocks, lasts floor(4 x
+//! div) or ceil(4 x div) system clocks: at 150 MHz, the default of the Pico 2,
+//! 20 MHz asked for gives periods of 46.7 ns as well as 53.3 ns. The data sheet
+//! allows 50 ns at the least (20 MHz, table 16-6): when the shortest period
+//! would be below that, the divider is raised to the smallest quarter that
+//! keeps every period long enough, and all of them are then equal (17.9 MHz at
+//! 125 MHz, 18.75 MHz at 150 MHz, 20 MHz at 200 MHz).
+static uint32_t spi_clkdiv256(uint32_t hz, uint32_t sys_hz)
+{
+    uint64_t pio_hz = (uint64_t)hz * SPI_PIO_CLOCKS_PER_BIT;
+    uint32_t div256 =
+        (uint32_t)(((uint64_t)sys_hz * 256 + pio_hz - 1) / pio_hz);
+    if (div256 < 256) {
+        div256 = 256; // the system clock was lowered after the check: as fast
+                      // as it goes
+    }
+    // A period of 50 ns in system clocks, rounded up, and the shortest SPI
+    // period that the divider gives, floor(4 x div) system clocks
+    uint32_t min_period =
+        (sys_hz + ENC28J60_SPI_HZ_MAX - 1) / ENC28J60_SPI_HZ_MAX;
+    uint32_t shortest = div256 * SPI_PIO_CLOCKS_PER_BIT / 256;
+    if (shortest < min_period) {
+        div256 = (min_period * 256 + SPI_PIO_CLOCKS_PER_BIT - 1) /
+                 SPI_PIO_CLOCKS_PER_BIT;
+    }
+    return div256;
+}
+
 //! Run the SPI program on the state machine, from the start. It also puts the
 //! lines in their idle state, which ends a transfer that was cut short, so it
 //! is how a stopped or stuck state machine is brought back.
@@ -263,13 +294,9 @@ static void start_sm(const enc28j60_config *cfg)
     // PHY accesses were unreliable above it. Its program let go of the chip
     // select 143 ns after a read, where the data sheet asks for 210 ns (TCSH)
     // for the MAC and MII registers, and less at a faster clock.
-    float div = (float)clock_get_hz(clk_sys) /
-                (float)((uint64_t)spi_hz(cfg) * SPI_PIO_CLOCKS_PER_BIT);
-    if (div < 1.0f) {
-        div = 1.0f; // the system clock was lowered after the check: as fast as
-                    // it goes
-    }
-    sm_config_set_clkdiv(&c, div);
+    uint32_t div256 = spi_clkdiv256(spi_hz(cfg), clock_get_hz(clk_sys));
+    sm_config_set_clkdiv_int_frac(&c, (uint16_t)(div256 >> 8),
+                                  (uint8_t)(div256 & 0xff));
 
     // Initialize pins to default state: CS high, SCK low, MOSI low
     pio_sm_set_pins_with_mask(cfg->pio, cfg->sm,

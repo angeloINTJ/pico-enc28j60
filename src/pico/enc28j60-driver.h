@@ -71,7 +71,10 @@ typedef struct {
     //! 0 stands for ENC28J60_SPI_HZ_DEFAULT. The PIO runs at four times this,
     //! so the system clock has to allow it. The silicon revisions B1 and B4
     //! read and write the MAC registers unreliably below 8 MHz (errata, issue
-    //! 1), see ENC28J60_SPI_HZ_DEFAULT.
+    //! 1), see ENC28J60_SPI_HZ_DEFAULT. The clock is never faster than this,
+    //! and is lowered when the fractional divider of the PIO would make a
+    //! period shorter than 50 ns (20 MHz becomes 18.75 MHz with a system clock
+    //! of 150 MHz, the default of the Pico 2).
     uint32_t spi_hz;
     uint irq_pin;
     //! The DMA interrupt of the asynchronous functions: 0 for DMA_IRQ_0, 1 for

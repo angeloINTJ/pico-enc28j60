@@ -210,7 +210,7 @@ stack serve a frame the moment it arrives, see below.
 | `cs_pin` | 5 | chip select, any GPIO |
 | `rst_pin` | 7 | reset of the chip; -1 for none |
 | `irq_pin` | -1 | the GPIO wired to INT; -1 when it is not wired |
-| `spi_hz` | 10000000 | the SPI clock in Hz, from 100 kHz to 20 MHz, the limit of the chip. The errata ask for 8 MHz or more with the silicon revisions B1 and B4, and the default leaves room above it for the rounding of the divider of the PIO; going faster depends on the wiring. The PIO runs at four times this, so the system clock has to allow it |
+| `spi_hz` | 10000000 | the SPI clock in Hz, from 100 kHz to 20 MHz, the limit of the chip. The errata ask for 8 MHz or more with the silicon revisions B1 and B4, and the default leaves room above it for the rounding of the divider of the PIO; going faster depends on the wiring. The PIO runs at four times this, so the system clock has to allow it. The clock is never faster than asked for, and is lowered when the divider would make a period shorter than the 50 ns of the data sheet: on a Pico 2 at its default 150 MHz, 20 MHz runs at 18.75 MHz (on a Pico at its default 200 MHz it is exact) |
 | `mac_addr` | all zeros | the MAC address. Left at zeros, `begin()` makes a locally administered one from the unique ID of the board, so that two boards never share it; `getMACAddress()` says which |
 | `rx_buffer_size` | `0x1000` | bytes of the 8 KB of the chip used for reception, the rest is the transmit area. Rounded down to an even number and kept between `0x0600` and `0x1A00`, so that both hold a full frame |
 | `pio_instance`, `pio_sm` | -1, -1 | the PIO block (0, 1, ...) and the state machine (0-3) to claim; -1 lets the driver take any that is free |
@@ -313,7 +313,11 @@ What it does not do:
    wiring lets it go is for you to find out: on the bench of the author every test of
    `bench.py` and `benchlwip.py` passed at 20 MHz. The clock is worked out from the
    system clock when `begin()` runs (and again when the chip is started over), so
-   change the system clock before `begin()`, not after.
+   change the system clock before `begin()`, not after. Those figures are with the Pico
+   at 200 MHz, the default of arduino-pico, where 20 MHz is exact; at other system
+   clocks the driver lowers a clock near 20 MHz so that no period is shorter than the
+   50 ns of the data sheet (with the system clock at 150 MHz, the default of the Pico 2,
+   20 MHz runs at 18.75 MHz and a frame takes 0.77 ms).
  * The receive filter is fixed: a frame is delivered if its CRC is good and it is
    addressed to the board, to everybody (broadcast) or to a group (multicast). There
    is no promiscuous mode, and frames with a bad CRC never get to you.

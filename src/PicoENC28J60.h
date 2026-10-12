@@ -63,7 +63,10 @@ struct ENC28J60Config {
     // is 10 MHz because the PIO divides the system clock by a fraction, and
     // some periods of an 8 MHz clock would be longer than 125 ns. Going
     // faster depends on the wiring. The PIO runs at four times this, so the
-    // system clock must be at least that.
+    // system clock must be at least that. The clock is never faster than
+    // asked for, and is lowered when the divider would make a period shorter
+    // than the 50 ns of the data sheet: on a Pico 2 at its default 150 MHz,
+    // 20 MHz runs at 18.75 MHz (on a Pico at its default 200 MHz it is exact).
     uint32_t spi_hz = 10000000;
 
     // PIO configuration. The state machine is claimed, so the Arduino core and
