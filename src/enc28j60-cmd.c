@@ -119,19 +119,46 @@ static void __time_critical_func(dma_irq_handler)()
     }
 }
 
-static void add_channel_callback(uint irq, uint channel, void (*cb)(void *),
-                                 void *data)
+//! Put arg, filled in here, at the head of the chain that dma_irq_handler()
+//! walks; it is linked last, so that the handler never sees half of it
+static void add_channel_callback(irq_arg_chain *arg, uint irq, uint channel,
+                                 void (*cb)(void *), void *data)
 {
-    irq_arg_chain *arg = calloc(1, sizeof(irq_arg_chain));
-    if (arg == NULL) {
-        panic("Failed to allocate irq_arg_chain object for dma channels");
-    }
     arg->irq = irq;
     arg->channel = channel;
     arg->data = data;
     arg->cb = cb;
     arg->next = irq_args.next;
     irq_args.next = arg;
+}
+
+//! Take every entry of the chain that belongs to a driver out, and free it.
+//! The channels of those entries no longer raise interrupts, and the handler,
+//! which runs on this core, sees the chain whole at every step: each unlink is
+//! one store.
+static void remove_channel_callbacks(const void *data)
+{
+    irq_arg_chain **link = &irq_args.next;
+    while (*link != NULL) {
+        irq_arg_chain *entry = *link;
+        if (entry->data == data) {
+            *link = entry->next;
+            free(entry);
+        } else {
+            link = &entry->next;
+        }
+    }
+}
+
+// How many drivers use each of the two DMA interrupts; dma_irq_handler() is
+// installed on one when its first user comes and removed when the last leaves.
+// The SDK has a handful of shared handler slots for the whole system, and
+// adding the same handler again for each driver used one up every time.
+static uint8_t irq_users[2];
+
+static uint dma_irq_number(uint dma_irq)
+{
+    return dma_irq ? DMA_IRQ_1 : DMA_IRQ_0;
 }
 
 typedef struct {
@@ -163,6 +190,10 @@ struct enc28j60_cmd_buf {
     uint rx_channel;
     uint tx_ctrl_channel;
 
+    //! enc28j60_config.dma_irq at the init: what the deinit gives back must not
+    //! depend on the configuration staying as it was
+    uint dma_irq;
+
     //! How many of the two DMA transfers of the execution in progress have not
     //! finished yet: the chain that sends the commands, and the reception when
     //! the commands read something
@@ -193,21 +224,43 @@ static void __time_critical_func(rx_irq_handler)(void *data)
     transfer_done(data);
 }
 
-void enc28j60_cmd_buf_init(enc28j60 *eth)
+enc28j60_status enc28j60_cmd_buf_init(enc28j60 *eth)
 {
     enc28j60_config *cfg = eth->cfg;
 
-    eth->cmd_buf = calloc(1, sizeof(enc28j60_cmd_buf));
-    if (eth->cmd_buf == NULL) {
-        panic("Failed to allocate memory for ENC28J60 command buffer");
+    // Everything that can be missing is taken first, so that a failure leaves
+    // nothing behind
+    enc28j60_cmd_buf *b = calloc(1, sizeof(enc28j60_cmd_buf));
+    irq_arg_chain *tx_arg = calloc(1, sizeof(irq_arg_chain));
+    irq_arg_chain *rx_arg = calloc(1, sizeof(irq_arg_chain));
+    if (b == NULL || tx_arg == NULL || rx_arg == NULL) {
+        free(b);
+        free(tx_arg);
+        free(rx_arg);
+        return ENC28J60_ERR_NOMEM;
+    }
+    int channels[3];
+    for (int i = 0; i < 3; ++i) {
+        channels[i] = dma_claim_unused_channel(false);
+        if (channels[i] < 0) {
+            while (--i >= 0) {
+                dma_channel_unclaim((uint)channels[i]);
+            }
+            free(b);
+            free(tx_arg);
+            free(rx_arg);
+            return ENC28J60_ERR_DMA;
+        }
     }
 
-    enc28j60_cmd_buf *b = eth->cmd_buf;
+    eth->cmd_buf = b;
+    b->dma_irq = cfg->dma_irq;
     b->tx_buf_ptr = b->tx_buf;
     b->rx_buf_ptr = b->rx_buf;
 
-    b->tx_channel = (uint)dma_claim_unused_channel(true);
-    b->tx_ctrl_channel = (uint)dma_claim_unused_channel(true);
+    b->tx_channel = (uint)channels[0];
+    b->tx_ctrl_channel = (uint)channels[1];
+    b->rx_channel = (uint)channels[2];
 
     dma_channel_config c = dma_channel_get_default_config(b->tx_channel);
     channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
@@ -227,10 +280,10 @@ void enc28j60_cmd_buf_init(enc28j60 *eth)
                           0, // transfer count
                           false // trigger
     );
-    add_channel_callback(cfg->dma_irq, b->tx_channel, tx_irq_handler, eth);
+    add_channel_callback(tx_arg, cfg->dma_irq, b->tx_channel, tx_irq_handler,
+                         eth);
     dma_irqn_set_channel_enabled(cfg->dma_irq, b->tx_channel, true);
 
-    b->rx_channel = (uint)dma_claim_unused_channel(true);
     c = dma_channel_get_default_config(b->rx_channel);
     channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
     channel_config_set_read_increment(&c, false);
@@ -242,7 +295,8 @@ void enc28j60_cmd_buf_init(enc28j60 *eth)
                           0, // transfer count
                           false // trigger
     );
-    add_channel_callback(cfg->dma_irq, b->rx_channel, rx_irq_handler, eth);
+    add_channel_callback(rx_arg, cfg->dma_irq, b->rx_channel, rx_irq_handler,
+                         eth);
     dma_irqn_set_channel_enabled(cfg->dma_irq, b->rx_channel, true);
 
     c = dma_channel_get_default_config(b->tx_ctrl_channel);
@@ -262,10 +316,58 @@ void enc28j60_cmd_buf_init(enc28j60 *eth)
                           &dma_hw->ch[b->tx_channel].al3_transfer_count, NULL,
                           2, false);
 
-    uint irq = cfg->dma_irq ? DMA_IRQ_1 : DMA_IRQ_0;
-    irq_add_shared_handler(irq, dma_irq_handler,
-                           PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
-    irq_set_enabled(irq, true);
+    if (irq_users[b->dma_irq]++ == 0) {
+        uint irq = dma_irq_number(b->dma_irq);
+        irq_add_shared_handler(irq, dma_irq_handler,
+                               PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
+        irq_set_enabled(irq, true);
+    }
+    return ENC28J60_OK;
+}
+
+void enc28j60_cmd_buf_deinit(enc28j60 *eth)
+{
+    enc28j60_cmd_buf *b = eth->cmd_buf;
+    if (b == NULL) {
+        return;
+    }
+    const uint channels[] = { b->tx_ctrl_channel, b->tx_channel,
+                              b->rx_channel };
+
+    // Normally nothing runs here, but a wait that gave up may have left a list
+    // going. The channels are disabled first, since a disabled channel ignores
+    // triggers: otherwise the transmit channel, ending a block while the others
+    // are stopped, would start the control channel again, on the control blocks
+    // freed below.
+    for (size_t i = 0; i < 3; ++i) {
+        hw_clear_bits(&dma_hw->ch[channels[i]].al1_ctrl,
+                      DMA_CH0_CTRL_TRIG_EN_BITS);
+    }
+
+    // The interrupts go off before the channels are stopped: a transfer in
+    // flight when a channel is aborted can still complete and signal it
+    // (erratum RP2040-E13, see dma_channel_abort() in the SDK)
+    for (size_t i = 0; i < 3; ++i) {
+        dma_irqn_set_channel_enabled(b->dma_irq, channels[i], false);
+    }
+    for (size_t i = 0; i < 3; ++i) {
+        dma_channel_abort(channels[i]);
+        dma_irqn_acknowledge_channel(b->dma_irq, channels[i]);
+        dma_channel_unclaim(channels[i]);
+    }
+    remove_channel_callbacks(eth);
+
+    if (irq_users[b->dma_irq] > 0 && --irq_users[b->dma_irq] == 0) {
+        uint irq = dma_irq_number(b->dma_irq);
+        irq_remove_handler(irq, dma_irq_handler);
+        // Nobody else shares the interrupt: it goes back to how it was found
+        if (!irq_has_shared_handler(irq)) {
+            irq_set_enabled(irq, false);
+        }
+    }
+
+    free(b);
+    eth->cmd_buf = NULL;
 }
 
 bool enc28j60_cmd_buf_encode_cmd(enc28j60 *eth, uint32_t cmd, const void *src)

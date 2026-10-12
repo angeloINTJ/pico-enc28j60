@@ -50,6 +50,7 @@ static PicoENC28J60::Error toError(enc28j60_status status)
     case ENC28J60_ERR_NO_CHIP:
         return PicoENC28J60::Error::NoChip;
     case ENC28J60_ERR_NOMEM:
+    case ENC28J60_ERR_DMA: // only the asynchronous functions, never used here
         return PicoENC28J60::Error::NoMemory;
     case ENC28J60_ERR_IO:
         break;

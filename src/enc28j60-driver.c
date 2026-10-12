@@ -98,6 +98,12 @@ static uint32_t spi_hz(const enc28j60_config *cfg)
     return cfg->spi_hz ? cfg->spi_hz : ENC28J60_SPI_HZ_DEFAULT;
 }
 
+//! Does the configuration ask for the asynchronous functions (DMA)?
+static bool async_mode(const enc28j60_config *cfg)
+{
+    return cfg->notify.notify != NULL && cfg->notify.wait != NULL;
+}
+
 //! Do the pins, the buffer, the SPI clock and the choice of the state machine
 //! make sense?
 static enc28j60_status validate_config(const enc28j60_config *cfg)
@@ -120,6 +126,11 @@ static enc28j60_status validate_config(const enc28j60_config *cfg)
         (cfg->irq_pin >= NUM_BANK0_GPIOS || cfg->irq_pin == cfg->mosi_pin ||
          cfg->irq_pin == cfg->miso_pin || cfg->irq_pin == cfg->sclk_pin ||
          cfg->irq_pin == cfg->cs_pin)) {
+        return ENC28J60_ERR_CONFIG;
+    }
+
+    // The asynchronous functions use DMA_IRQ_0 or DMA_IRQ_1
+    if (async_mode(cfg) && cfg->dma_irq > 1) {
         return ENC28J60_ERR_CONFIG;
     }
 
@@ -465,6 +476,15 @@ enc28j60 *enc28j60_init_status(enc28j60_config *cfg, enc28j60_status *status)
     eth->wptr = cfg->rx_size;
     eth->dev_rptr = eth->wptr;
 
+    // The asynchronous functions need memory and DMA channels; they are taken
+    // before the chip is touched, so that a shortage leaves it alone
+    if (async_mode(cfg)) {
+        result = enc28j60_cmd_buf_init(eth);
+        if (result != ENC28J60_OK) {
+            goto unwind;
+        }
+    }
+
     start_sm(cfg);
     if (cfg->irq_cb) {
         irq_added = add_gpio_irq(cfg);
@@ -478,10 +498,6 @@ enc28j60 *enc28j60_init_status(enc28j60_config *cfg, enc28j60_status *status)
         goto unwind;
     }
 
-    if (cfg->notify.notify != NULL && cfg->notify.wait != NULL) {
-        enc28j60_cmd_buf_init(eth);
-    }
-
     if (status != NULL) {
         *status = ENC28J60_OK;
     }
@@ -491,6 +507,7 @@ unwind:
     if (irq_added) {
         remove_gpio_irq(cfg);
     }
+    enc28j60_cmd_buf_deinit(eth);
     free(eth);
 release:
     release_pio(cfg);
@@ -521,6 +538,9 @@ const char *enc28j60_status_string(enc28j60_status status)
         return "out of memory";
     case ENC28J60_ERR_IO:
         return "the SPI transfer stalled: the PIO state machine does not run";
+    case ENC28J60_ERR_DMA:
+        return "the asynchronous functions need 3 DMA channels and fewer are "
+               "free";
     }
     return "unknown error";
 }
@@ -557,6 +577,9 @@ void enc28j60_deinit(enc28j60 *eth)
     if (cfg->irq_cb) {
         remove_gpio_irq(cfg);
     }
+    // The DMA channels are stopped while the state machine they serve is still
+    // theirs
+    enc28j60_cmd_buf_deinit(eth);
     release_pio(cfg);
     free(eth);
 }

@@ -447,8 +447,14 @@ static inline void system_reset(enc28j60 *eth)
 #define RBM_MAX 31
 #define WBM_MAX 30
 
-//! Initialize the command buffer
-void enc28j60_cmd_buf_init(enc28j60 *eth);
+//! Initialize the command buffer of the asynchronous functions: memory, three
+//! DMA channels and the DMA interrupt handler. Returns ENC28J60_ERR_NOMEM or
+//! ENC28J60_ERR_DMA, having taken nothing, if one of them is missing.
+enc28j60_status enc28j60_cmd_buf_init(enc28j60 *eth);
+
+//! Give back what enc28j60_cmd_buf_init() took; nothing happens if the driver
+//! has no command buffer. Call it on the core that called the init.
+void enc28j60_cmd_buf_deinit(enc28j60 *eth);
 
 //! Encode a command in the transmission buffer.
 //!

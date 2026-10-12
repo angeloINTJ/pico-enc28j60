@@ -17,7 +17,8 @@ typedef enum {
     ENC28J60_ERR_PIO_SPACE, //!< no PIO has the room and a free state machine
     ENC28J60_ERR_NO_CHIP, //!< no ENC28J60 answers on the SPI pins
     ENC28J60_ERR_NOMEM, //!< out of memory
-    ENC28J60_ERR_IO //!< an SPI transfer stalled: the PIO does not run
+    ENC28J60_ERR_IO, //!< an SPI transfer stalled: the PIO does not run
+    ENC28J60_ERR_DMA //!< no free DMA channel for the asynchronous functions
 } enc28j60_status;
 
 //! The outcome of the transmission of a frame
@@ -73,7 +74,9 @@ typedef struct {
     //! 1), see ENC28J60_SPI_HZ_DEFAULT.
     uint32_t spi_hz;
     uint irq_pin;
-    uint dma_irq; //!< IRQ channel used to handle DMAs
+    //! The DMA interrupt of the asynchronous functions: 0 for DMA_IRQ_0, 1 for
+    //! DMA_IRQ_1
+    uint dma_irq;
 
     //! Size of the  recevie buffer in bytes; the device has 8kB RAM for
     //! buffers; what is not a receive buffer will be used as a transmit
@@ -117,10 +120,10 @@ enc28j60 *enc28j60_init_status(enc28j60_config *cfg, enc28j60_status *status);
 const char *enc28j60_status_string(enc28j60_status status);
 
 //! Stop the chip and give back what the driver took: the state machine, the
-//! SPI program when it is the last user, and the memory of the driver. The
-//! configuration stays with the caller. The DMA channels and the interrupt
-//! handler of the command buffer, which only exist when notify callbacks were
-//! given, are not released.
+//! SPI program when it is the last user, the memory of the driver and, when
+//! notify callbacks were given, the DMA channels and the DMA interrupt handler
+//! of the asynchronous functions (call it on the core that called the init
+//! then). The configuration stays with the caller.
 void enc28j60_deinit(enc28j60 *eth);
 
 //! An SPI transfer made no progress for a long time, which means that the PIO
