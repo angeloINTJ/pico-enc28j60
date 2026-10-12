@@ -38,7 +38,8 @@ Written for this fork:
 
 * `src/PicoENC28J60.h`, `src/PicoENC28J60.cpp`: the Arduino class. Pin and MAC
   configuration, sending and receiving whole frames, link and revision, the
-  handling of the INT pin through the Arduino core, diagnostic counters.
+  handling of the INT pin through the Arduino core, diagnostic counters, the
+  reporting of errors, `end()` and the recovery from a stalled PIO.
 * `src/PicoENC28J60lwIP.h`: the network interface that plugs the driver into the
   lwIP stack of the arduino-pico core: DHCP, TCP and UDP sockets, WebServer, with
   polling or driven by the INT pin.
@@ -62,19 +63,28 @@ Changes to Lukasz's files, which keep his copyright notice and carry a
   * the separate chip select pin;
   * `enc28j60_init()` gives up instead of hanging when no chip answers (the
     oscillator-ready wait is bounded and the revision ID is checked) and returns
-    `NULL`;
-  * the PIO program is loaded once per PIO block, so that initialization can be
-    retried;
+    `NULL`; `enc28j60_init_status()` also says why it failed, after checking the
+    configuration;
+  * the PIO program is loaded once per PIO block and shared, so that initialization
+    can be retried, and its absence of room is detected (`pio_add_program()` returns
+    a negative number);
+  * the state machine is claimed, and can be left to the driver to choose;
+  * `enc28j60_deinit()` stops the chip and gives everything back;
+  * `enc28j60_io_failed()` and `enc28j60_recover()` deal with a state machine that
+    stopped running;
   * fixes in the blocking receive and transmit paths for the silicon errata: the
     receive read pointer is always odd and the transmit logic is reset before each
-    frame; and `enc28j60_frame_rx_info_blk()` kept the size of a frame but lost
-    the pointer to the next one (an `=` that had to be `|=`);
-  * new functions `enc28j60_frame_tx_wait_blk()`, `enc28j60_set_mac_blk()`,
-    `enc28j60_rx_reset_blk()`, `enc28j60_irq_status_blk()` and
-    `enc28j60_irq_enable_blk()`.
+    frame; the packet counter stands for the unreliable packet flag (issue 6); a
+    frame aborted after a late collision is sent again (issue 13); and
+    `enc28j60_frame_rx_info_blk()` kept the size of a frame but lost the pointer to
+    the next one (an `=` that had to be `|=`);
+  * new functions `enc28j60_frame_tx_wait_blk()`, `enc28j60_frame_send_blk()`,
+    `enc28j60_tx_status_blk()`, `enc28j60_set_mac_blk()`, `enc28j60_rx_reset_blk()`,
+    `enc28j60_irq_status_blk()` and `enc28j60_irq_enable_blk()`.
 * `src/enc28j60-cmd.h`, `src/enc28j60-cmd.c`: the wait on the MII interface has a
-  timeout, a few register bit definitions were added, `PHID1` was corrected, and a
-  signedness warning was fixed.
+  timeout, a few register bit definitions were added, `PHID1` was corrected, a
+  signedness warning was fixed, the pad setting of the MAC makes 64 byte frames, and
+  the blocking transfer gives up when the state machine makes no progress.
 * `freertos/enc28j60-freertos-driver.c`: stops with a message if the chip does
   not answer. Moved out of `src/` so that the Arduino IDE does not try to compile
   it; `freertos/pico/enc28j60-freertos-driver.h` was moved and is unchanged.

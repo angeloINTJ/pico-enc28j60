@@ -1,5 +1,72 @@
 # Changelog
 
+## Unreleased
+
+Robustness of the driver: it no longer hangs when the PIO does not run, shares the PIO
+with the rest of the sketch, reports why it could not start, and follows more of the
+silicon errata. The lwIP interface without the INT pin answers faster.
+
+### Added
+
+* `PicoENC28J60::end()` stops the chip and gives back the state machine, the pins and
+  the memory; `begin()` can start it again. The destructor calls it. `enc28j60_deinit()`
+  did nothing before.
+* `PicoENC28J60::lastError()`, the `Error` enum and `errorString()` say why `begin()`
+  failed: a pin out of range or used twice, a state machine that is taken, no PIO with
+  room for the program, no chip answering, out of memory. The C driver has
+  `enc28j60_init_status()` and `enc28j60_status_string()`.
+* `ENC28J60Config::pio_instance` and `pio_sm` default to -1, which lets the driver find
+  a PIO with room and a free state machine. The C driver does the same with
+  `pio = NULL` and `sm = ENC28J60_SM_ANY`, which are now the defaults of
+  `enc28j60_get_default_config()`.
+* Recovery from a PIO that stops running: `enc28j60_io_failed()` and
+  `enc28j60_recover()` in the C driver, and in `PicoENC28J60` a restart of the state
+  machine and of the chip, with `Stats::io_errors` and `Stats::recoveries`.
+* `Stats::tx_aborts` and `Stats::tx_retries`; in the C driver
+  `enc28j60_frame_send_blk()` and `enc28j60_tx_status_blk()`, which gives the transmit
+  status vector of a frame.
+* `extras/bench`: tests for the configuration errors, a PIO without room, the transmit
+  status, sharing the PIO with `SerialPIO`, an SPI transfer that stalls, and `end()`
+  followed by `begin()`.
+* A GitHub Actions workflow: `arduino-lint`, the formatting of the sources, and a build
+  of every example for the Pico, Pico W, Pico 2 and Pico 2 W.
+
+### Fixed
+
+* The driver never claimed its PIO state machine. The Arduino core gives the first free
+  one to `SerialPIO` and the like; it fills `pio1` first, so with five `SerialPIO`
+  objects the fifth landed on the state machine of the driver and every call to the
+  chip then waited for ever. The state machine is claimed now, and the others get
+  another one.
+* A blocking SPI transfer waited for ever when the PIO did not run. It now gives up
+  after about 8 ms without progress, reads zeros, and the class recovers (see above).
+* `pio_add_program()` returns a negative number when the instruction memory is full;
+  that was taken for an offset.
+* `hasPacket()` and `interruptPending()` without the INT pin read `EIR.PKTIF`, which
+  the silicon errata (issue 6) says is unreliable, and could miss a frame. The
+  packet counter is used now, also for `INT_PACKET_RX` in `getInterruptFlags()` and
+  `peekInterruptFlags()`. The INT pin itself is reliable and was not affected.
+* A frame that the MAC gave up on after a late collision (issue 13) was counted as sent
+  and never retried. It is sent again, up to 15 times; any other abort makes
+  `sendFrame()` return `false`.
+* The pad setting of the MAC (`MACON3.PADCFG`) padded short frames to 64 bytes before the
+  FCS, so they went out with 68 bytes. They are 64 bytes now.
+* `BasicTest` and `AdvancedTest` sent forged ARP and ICMP packets claiming to be
+  192.168.1.100, which could confuse a real network. They send a broadcast with the
+  experimental EtherType 0x88B5 now.
+
+### Changed
+
+* `PicoENC28J60lwIP` without the INT pin looks at the chip every millisecond right after
+  a frame went out or came in, backing off to the period of `setPollPeriod()` (5 ms by
+  default) when nothing arrives, and a frame sent from your code brings the next look
+  forward. A fixed period made the time of a request depend on where the timer fell
+  relative to the answer of the peer: 13 ms or 18 ms for the same page on the bench,
+  10 ms now. An idle line costs what it did.
+* `hasPacket()` is one read of the packet counter.
+* `README.md` has a section on what the library does when things go wrong and what it
+  does not do.
+
 ## 1.1.0 - 2026-10-11
 
 The first version that works on hardware. 1.0.0 compiled, but on a real ENC28J60 it

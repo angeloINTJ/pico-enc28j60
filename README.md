@@ -19,9 +19,10 @@ The base driver uses:
 
  * 5 GPIOs for communication with the device: 4 for SPI and 1 for the interrupt
    signal.
- * The SPI GPIOs are driven by a PIO program that is 17 instructions long and
-   uses 1 state machine. The hardware SPI is not used because the device
-   commands are variable length.
+ * The SPI GPIOs are driven by a PIO program that is 18 instructions long and
+   uses 1 state machine, which the driver claims so that other users of the PIO
+   (SerialPIO, tone, Servo, ...) are given another one. The hardware SPI is not
+   used because the device commands are variable length.
  * In non-blocking mode, the driver uses 3 DMA channels: 1 for data reception
    and two for scatter-gather transmission.
 
@@ -120,7 +121,8 @@ PicoENC28J60 eth;  // default pins
 void setup() {
     Serial.begin(115200);
     if (!eth.begin()) {
-        Serial.println("No ENC28J60 found: check the wiring and the 3.3 V supply");
+        // say why: wrong pins, no free PIO state machine, no chip answering...
+        Serial.println(PicoENC28J60::errorString(eth.lastError()));
         while (true) delay(1000);
     }
     Serial.printf("revision 0x%02X\n", eth.getRevision());
@@ -136,7 +138,8 @@ void loop() {
 ```
 
 Other pins or MAC address: fill in an `ENC28J60Config` and pass it to
-`eth.begin(config)`.
+`eth.begin(config)`. By default the library picks any PIO block with room for its
+program and a free state machine; `pio_instance` and `pio_sm` choose them yourself.
 
 ### Using the INT pin
 
@@ -202,8 +205,10 @@ Driver can be configured through an enc28j60_config instance. It can be
 created and initialized to defaults using enc28j60_get_default_config(). The
 struct has the following fields:
 
- * pio - a PIO instance to be used for SPI: pio0 or pio1
- * sm - index to the state machine to run the PIO program
+ * pio - a PIO instance to be used for SPI: pio0 or pio1, or NULL (the default) to
+         let the driver look for any one with room and a free state machine
+ * sm - index to the state machine to run the PIO program, or ENC28J60_SM_ANY (the
+        default); the state machine is claimed
  * miso_pin - defaults to 16
  * mosi_pin - defaults to 17
  * sclk_pin - defaults to 18
@@ -314,7 +319,12 @@ void setup_network()
  * `PicoENC28J60(const ENC28J60Config& config = ENC28J60Config())` - pins, MAC
    address and buffer split live in `ENC28J60Config`.
  * `bool begin()`, `bool begin(const ENC28J60Config&)` - initialize. Returns
-   `false` if no ENC28J60 answers, and can be called again.
+   `false` when it cannot, and can be called again; `lastError()` says why (an
+   `Error` value) and `PicoENC28J60::errorString(error)` turns it into text: a pin
+   that is out of range or used twice, a state machine that is taken, no PIO with
+   room for the program, no chip answering, no memory.
+ * `void end()` - stops the chip and gives back the state machine, the pins and the
+   memory; `begin()` starts it again. The destructor calls it.
  * `bool linkStatus()` - the link takes a second or two to come up after `begin()`.
  * `uint8_t getRevision()`
  * `void getMACAddress(uint8_t* mac) const`, `void setMACAddress(const uint8_t* mac)`
@@ -327,9 +337,14 @@ void setup_network()
    `getInterruptFlags()` (reads the flags and masks the pin),
    `acknowledgeInterrupts(flags)` (clears them and unmasks the pin),
    `interruptCount()`. Looking without touching the pin: `peekInterruptFlags()`,
-   `hasPacket()`, `hasTXComplete()`, `hasLinkChange()`, `hasRXError()`.
+   `hasPacket()`, `hasLinkChange()`, `hasRXError()` (`hasTXComplete()` is of
+   little use: `sendFrame()` already waits for the frame to leave the wire).
    `setInterruptCallback()` and `poll()` are for a handler that only sets a flag.
- * `const Stats& stats()` - frame counters, for diagnostics.
+   `hasPacket()` and `INT_PACKET_RX` come from the packet counter of the chip,
+   because its packet flag is not reliable (silicon errata, issue 6).
+ * `const Stats& stats()` - frame counters, for diagnostics: frames in and out,
+   `tx_failures`, `tx_aborts` (the MAC gave up), `tx_retries` (a late collision
+   was retried), `io_errors` and `recoveries` (see below).
  * `void* getDriverHandle()` - the handle of the C driver.
 
 ### PicoENC28J60lwIP
@@ -346,6 +361,47 @@ the chip is never touched from interrupt context. On the bench that took the med
 time of a `GET /` from 16 ms to 11 ms and made an idle network free of SPI
 traffic. The timer of `setPollPeriod()` remains as a safety net (20 ms then).
 
+Without the INT pin the chip is polled: every 5 ms while the line is quiet, and
+every millisecond right after a frame went out or came in, backing off to 5 ms
+again when nothing arrives. The peer's answer to a frame is usually on its way,
+and a fixed period made the time of a request depend on where the timer happened to
+fall (13 ms or 18 ms for the same page on the bench); with the adaptive period it
+is 10 ms.
+
+---
+
+## Robustness and limitations
+---------------------------
+
+What the library does when things go wrong:
+
+ * **A PIO that does not run.** Another piece of code taking the state machine, or
+   stopping it, would leave a blocking SPI transfer waiting forever. Transfers give
+   up after about 8 ms without progress and read zeros; the class counts it
+   (`stats().io_errors`), restarts the state machine and the chip, and counts that
+   too (`stats().recoveries`), trying again every second while the chip does not
+   answer. Frames in the chip's buffers are lost in the process.
+ * **A frame the MAC gives up on** after a late collision, which some link partners
+   provoke in half duplex (silicon errata, issue 13), is sent again, up to 15
+   times (`stats().tx_retries`). Any other abort is final and `sendFrame()`
+   returns `false` (`stats().tx_aborts`).
+ * **A receive buffer that overflows** loses frames; `INT_RX_ERROR` tells you.
+
+What it does not do:
+
+ * It is 10 Mbit/s and **half duplex** only, as the chip is. The link partner has
+   to detect that by itself, which every switch and router does.
+ * SPI runs at 3.5 MHz, so a full-size frame takes about 3.5 ms to move between the
+   chip and the Pico, and the throughput is well below the 10 Mbit/s of the wire.
+ * `sendFrame()` and the receiving functions block while they talk to the chip;
+   they are not meant to be called from interrupt handlers.
+ * **Tested on** a Raspberry Pi Pico (RP2040) with an ENC28J60 revision B7 and the
+   arduino-pico core 6.3.0. The sketches also compile for the Pico W, Pico 2 and
+   Pico 2 W, but have not been run on them. The FreeRTOS+TCP driver is the one of
+   the original project, and was not built or run here.
+ * The lwIP interface does not renew the DHCP lease when the cable is unplugged and
+   plugged back.
+
 ---
 
 ## Examples
@@ -355,6 +411,8 @@ See the examples/ folder:
 - WebServerLedToggle - a web page with a Toggle LED button (lwIP, DHCP). Checked
   with a real browser on the bench.
 - BasicTest - raw frames: initialization, link, receive and print, send a test frame
+  (a broadcast with the experimental EtherType 0x88B5, never an ARP or ICMP that
+  could confuse a real network)
 - AdvancedTest - interrupt mode (needs INT wired to GP6), custom MAC, frame parsing.
   Checked on the bench.
 
