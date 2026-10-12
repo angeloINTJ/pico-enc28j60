@@ -300,6 +300,40 @@
 void enc28j60_execute_blocking(enc28j60 *eth, uint32_t cmd, void *dst,
                                const void *src);
 
+#ifdef ENC28J60_PROFILE
+//! What the blocking functions spend, counted when the driver is compiled with
+//! -DENC28J60_PROFILE, to measure the cost of its paths instead of estimating
+//! it. Without the define none of this exists, and the code is the same as if
+//! it had never been written. The counters are plain variables, for the code
+//! that calls the blocking functions to read between two calls: an interrupt
+//! handler or the other core calling them as well would spoil the counts.
+typedef struct {
+    //! Calls of enc28j60_execute_blocking(), one per command sent to the chip
+    //! (one that is refused because the state machine stalled counts too)
+    uint32_t commands;
+    //! The microseconds spent in them. The timer ticks once per microsecond and
+    //! is read before and after each command, so each is off by less than one
+    //! tick, either way
+    uint32_t command_us;
+    //! The reads of EIR made by the wait for the end of a transmission
+    //! (enc28j60_frame_tx_wait_blk(), and enc28j60_frame_send_finish_blk(),
+    //! which enc28j60_frame_send_blk() calls); each is one of the commands
+    //! above
+    uint32_t wait_reads;
+    //! The microseconds from the start of that wait to its last read
+    uint32_t wait_us;
+} enc28j60_profile;
+
+//! The counters; enc28j60_profile_read() copies them
+extern enc28j60_profile enc28j60_profile_counters;
+
+//! Set every counter to zero
+void enc28j60_profile_reset(void);
+
+//! Copy the counters to *out
+void enc28j60_profile_read(enc28j60_profile *out);
+#endif
+
 //! Write a register
 static inline void reg_bits_clear_blk(enc28j60 *eth, uint8_t addr, uint8_t data)
 {

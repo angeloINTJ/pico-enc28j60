@@ -110,6 +110,9 @@ give a frame bytes of the one being sent.
 * `txring` in `extras/bench/bench.py` sends through the C driver the way the lwIP
   interface does, each frame uploaded while the one before is on the wire, with receive
   buffers of several sizes.
+* Built with `-DENC28J60_PROFILE`, the blocking functions of the C driver count their
+  SPI commands and the microseconds they take (`enc28j60_profile_read()` in
+  `src/enc28j60-cmd.h`). Without the define the code is the same as before.
 
 ### Changed
 

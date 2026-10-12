@@ -946,9 +946,20 @@ static enc28j60_tx_status tx_wait(enc28j60 *eth, uint32_t timeout_us)
 {
     absolute_time_t deadline = make_timeout_time_us(timeout_us);
     enc28j60_tx_status result;
+#ifdef ENC28J60_PROFILE
+    uint32_t mark = time_us_32();
+#endif
 
     while (true) {
         uint8_t eir = reg_read_e_blk(eth, EIR);
+#ifdef ENC28J60_PROFILE
+        // Counted right after each read, so that every way out of the loop has
+        // its time already
+        uint32_t now = time_us_32();
+        ++enc28j60_profile_counters.wait_reads;
+        enc28j60_profile_counters.wait_us += now - mark;
+        mark = now;
+#endif
         if (eth->io_error) {
             return ENC28J60_TX_IO;
         }

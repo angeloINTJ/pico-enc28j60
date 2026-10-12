@@ -21,11 +21,36 @@
 // out while it writes to the flash, cannot be taken for a stall.
 #define STALL_SPINS 50000
 
+#ifdef ENC28J60_PROFILE
+enc28j60_profile enc28j60_profile_counters;
+
+void enc28j60_profile_reset(void)
+{
+    memset(&enc28j60_profile_counters, 0, sizeof(enc28j60_profile_counters));
+}
+
+void enc28j60_profile_read(enc28j60_profile *out)
+{
+    *out = enc28j60_profile_counters;
+}
+
+//! Add a command that started at the given time to the counters, whichever way
+//! it ended
+static __force_inline void profile_command_end(uint32_t started)
+{
+    ++enc28j60_profile_counters.commands;
+    enc28j60_profile_counters.command_us += time_us_32() - started;
+}
+#endif
+
 // Don't keep this function in flash
 void __time_critical_func(enc28j60_execute_blocking)(enc28j60 *eth,
                                                      uint32_t cmd, void *dst,
                                                      const void *src)
 {
+#ifdef ENC28J60_PROFILE
+    uint32_t started = time_us_32();
+#endif
     io_rw_8 *txfifo = (io_rw_8 *)&eth->cfg->pio->txf[eth->cfg->sm];
     io_rw_8 *rxfifo = (io_rw_8 *)&eth->cfg->pio->rxf[eth->cfg->sm];
 
@@ -86,6 +111,9 @@ void __time_critical_func(enc28j60_execute_blocking)(enc28j60 *eth,
             goto stall;
         }
     }
+#ifdef ENC28J60_PROFILE
+    profile_command_end(started);
+#endif
     return;
 
 stall:
@@ -94,6 +122,9 @@ stalled:
     if (rx_remain) {
         memset(rcv, 0, rx_remain);
     }
+#ifdef ENC28J60_PROFILE
+    profile_command_end(started);
+#endif
 }
 
 typedef struct irq_arg_chain {
