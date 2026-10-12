@@ -45,6 +45,7 @@
  */
 #include <PicoENC28J60.h>
 #include <SerialPIO.h>
+#include <hardware/clocks.h>
 #include <hardware/dma.h>
 #include <hardware/pio.h>
 #include <hardware/watchdog.h>
@@ -998,8 +999,10 @@ static void cmdSpiTest(uint32_t hz, uint32_t rounds)
     bool began = eth.begin(c);
     uint32_t errEth = 0, errMac = 0, errMii = 0, errMem = 0, frameUs = 0, regUs = 0;
     uint16_t phid1 = 0, phid2 = 0;
+    uint32_t clkdiv = 0;  // the divider of the state machine as the driver set it: INT in 31:16, FRAC in 15:8
     if (began) {
         enc28j60* h = driverHandle();
+        clkdiv = h->cfg->pio->sm[h->cfg->sm].clkdiv;
         uint32_t rng = 0x2545F491u ^ hz;
         auto next = [&rng]() {
             rng ^= rng << 13;
@@ -1049,10 +1052,11 @@ static void cmdSpiTest(uint32_t hz, uint32_t rounds)
     eth.end();
     bool restored = eth.begin(makeConfig());  // the MAC address and the registers the test used start over
     Serial.printf("SPITEST hz=%lu began=%d err=%s rounds=%lu eth=%lu mac=%lu mii=%lu mem=%lu phid1=0x%04X phid2=0x%04X "
-                  "frame_us=%lu reg_us=%lu io=%lu restored=%d\n",
+                  "frame_us=%lu reg_us=%lu io=%lu restored=%d div_int=%lu div_frac=%lu sys_hz=%lu\n",
                   (unsigned long)hz, began, err, (unsigned long)rounds, (unsigned long)errEth, (unsigned long)errMac,
                   (unsigned long)errMii, (unsigned long)errMem, phid1, phid2, (unsigned long)frameUs,
-                  (unsigned long)regUs, (unsigned long)io, restored);
+                  (unsigned long)regUs, (unsigned long)io, restored, (unsigned long)(clkdiv >> 16),
+                  (unsigned long)((clkdiv >> 8) & 0xFF), (unsigned long)clock_get_hz(clk_sys));
 }
 
 // TSV <length> <broadcast 0/1>: send one frame through the C driver and read its transmit status vector.

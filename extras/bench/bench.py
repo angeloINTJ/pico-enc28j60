@@ -516,12 +516,21 @@ def wait_link(p, timeout=25):
 def t_spi(p, ip, assert_up_to, expect_hz, rounds=2000):
     """Data through every kind of access at several SPI clocks. What the wiring can carry is not up to the
     library, so only the clocks up to --spi-assert-mhz have to be clean; the faster ones are reported."""
-    ok, notes = True, []
+    ok, notes, timing = True, [], []
     default_hz = num(kv(p.cmd("INFO", "INFO")), "spihz")
     for hz in SPI_SPEEDS:
         t = kv(p.cmd("SPITEST %d %d" % (hz, rounds), "SPITEST", 90))
         errors = sum(num(t, k) for k in ("eth", "mac", "mii", "mem"))
         clean = num(t, "began") == 1 and errors == 0 and num(t, "phid1") == 0x0083 and num(t, "io") == 0
+        # The divider of the PIO is fractional: one SPI period (4 PIO clocks) lasts floor(4 x div) or ceil(4 x div)
+        # system clocks. The shortest one has to respect the 50 ns of the data sheet (20 MHz) whatever was asked for:
+        # that is up to the driver, not to the wiring, so it is checked at every clock.
+        four = 4 * (num(t, "div_int") + num(t, "div_frac") / 256.0)
+        sys_hz = num(t, "sys_hz")
+        shortest_ns = int(four) * 1e9 / sys_hz if sys_hz else 0
+        in_spec = num(t, "began") == 1 and shortest_ns >= 50
+        timing.append("%.2f->%.2f MHz %.0f ns" % (hz / 1e6, sys_hz / four / 1e6 if four else 0, shortest_ns))
+        ok = ok and in_spec
         line = "%5.2f MHz: %s; frame read %.2f ms (49 x 31 bytes), register read %s us" % (
             hz / 1e6, "clean" if clean else ("did not start (%s)" % t.get("err") if num(t, "began") == 0 else
                                               "%d errors (eth %s, mac %s, mii %s, memory %s)" % (
@@ -532,6 +541,7 @@ def t_spi(p, ip, assert_up_to, expect_hz, rounds=2000):
             notes.append(line)
         else:
             info("spi", line + " (above --spi-assert-mhz: not a failure)")
+    notes.append("asked -> effective clock and shortest period (50 ns at least): " + ", ".join(timing))
     link = wait_link(p)
     replies = ping_replies(ip) if link else 0
     ok = ok and link and replies == 5 and default_hz == expect_hz
