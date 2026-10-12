@@ -31,7 +31,8 @@
  *
  * Wiring: ENC28J60Config defaults (SCK=GP2 MOSI=GP3 MISO=GP4 CS=GP5 RST=GP7).
  * Compile with -DBENCH_IRQ_PIN=6 for the interrupt-driven build, with the chip's
- * INT wired to that GPIO (benchlwip.py --irq 6 does it).
+ * INT wired to that GPIO (benchlwip.py --irq 6 does it). -DBENCH_SPI_HZ=n sets the SPI clock
+ * of the chip to n Hz instead of the default of the library (benchlwip.py --spi-hz n).
  */
 #include <LwipEthernet.h>
 #include <LwipIntfDev.h>
@@ -60,6 +61,9 @@ static ENC28J60Config makeConfig()
 {
     ENC28J60Config c;  // default pins
     c.irq_pin = BENCH_IRQ_PIN;
+#ifdef BENCH_SPI_HZ
+    c.spi_hz = BENCH_SPI_HZ;
+#endif
     return c;
 }
 PicoENC28J60lwIP eth(makeConfig());

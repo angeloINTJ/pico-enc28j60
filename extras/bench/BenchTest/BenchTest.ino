@@ -20,6 +20,9 @@
  * pin, so every test also proves that the interrupt alone drives reception.
  * The LINK command is available in that build.
  *
+ * -DBENCH_SPI_HZ=n sets the SPI clock of the chip to n Hz instead of the default of the
+ * library (bench.py --spi-hz n does that), to run every test at another clock.
+ *
  * Before the chip is initialized for real, setup() checks that begin() fails,
  * fast and for the right reason, with no chip behind the pins, with settings
  * that make no sense and with no room left in the PIO. The commands PIOSHARE,
@@ -62,6 +65,9 @@ static ENC28J60Config makeConfig()
     memcpy(c.mac_addr, MAC, 6);
 #ifdef BENCH_IRQ_PIN
     c.irq_pin = BENCH_IRQ_PIN;
+#endif
+#ifdef BENCH_SPI_HZ
+    c.spi_hz = BENCH_SPI_HZ;
 #endif
     return c;
 }

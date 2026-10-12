@@ -504,6 +504,7 @@ def main():
     ap.add_argument("--fqbn", default="rp2040:rp2040:rpipico")
     ap.add_argument("--flash", action="store_true", help="compile and upload BenchLwip first")
     ap.add_argument("--irq", type=int, metavar="GPIO", help="the board is the interrupt build, INT wired to this GPIO")
+    ap.add_argument("--spi-hz", type=int, metavar="HZ", help="with --flash, build with this SPI clock instead of the default")
     ap.add_argument("--tests", help="comma separated; default: all")
     ap.add_argument("--static-ip", help="a free address of the LAN, for the static test")
     ap.add_argument("--dns-name", help="a name to resolve; makes the dns test count")
@@ -515,7 +516,7 @@ def main():
 
     port = find_port(args.port)
     if args.flash:
-        flash(port, args.fqbn, args.irq, SKETCH)
+        flash(port, args.fqbn, args.irq, SKETCH, args.spi_hz)
     p = Pico(port)
     p.cmd("ID", "READY", 10)
 

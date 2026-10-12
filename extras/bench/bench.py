@@ -47,8 +47,9 @@ PICO_MAC = "02:50:49:43:4f:01"
 PORT_RX, PORT_ECHO, PORT_TX, PEER_PORT = 9999, 9997, 9998, 9998
 SIZES = [10, 18, 100, 400, 800, 1200, 1472]  # UDP payload sizes
 ALL_TESTS = ["init", "cfgerr", "pioful", "spi", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong",
-             "txbburst", "soak", "rxflood", "discard", "callback", "linkflag", "setmac", "txstat", "pioshare",
-             "stall", "lifecycle", "txmix", "lostchip"]
+             "txbburst", "soak", "rxflood", "rxoverflow", "discard", "callback", "linkflag", "setmac", "txstat",
+             "pioshare", "stall", "lifecycle", "txmix", "lostchip"]
+DEFAULT_SPI_HZ = 10000000  # ENC28J60Config::spi_hz
 SPI_SPEEDS = [1000000, 3500000, 8000000, 10000000, 12500000, 16000000, 20000000]  # Hz, for the spi test
 IRQ_TESTS = ["irqidle", "irqedge", "irqlink"]  # only with --irq
 results = []
@@ -148,13 +149,18 @@ def find_port(explicit):
     return cands[0]
 
 
-def flash(port, fqbn, irq_pin=None, sketch=SKETCH):
+def flash(port, fqbn, irq_pin=None, sketch=SKETCH, spi_hz=None):
     """Compile a bench sketch against this checkout and upload it."""
-    build = os.path.join(tempfile.gettempdir(), "picoenc-%s-build-%s" %
-                         (os.path.basename(sketch), "irq%d" % irq_pin if irq_pin is not None else "poll"))
+    variant = ("irq%d" % irq_pin if irq_pin is not None else "poll") + ("-%dhz" % spi_hz if spi_hz else "")
+    build = os.path.join(tempfile.gettempdir(), "picoenc-%s-build-%s" % (os.path.basename(sketch), variant))
     cmd = ["arduino-cli", "compile", "--fqbn", fqbn, "--library", REPO, "--build-path", build]
+    defines = []
     if irq_pin is not None:
-        cmd += ["--build-property", "compiler.cpp.extra_flags=-DBENCH_IRQ_PIN=%d" % irq_pin]
+        defines.append("-DBENCH_IRQ_PIN=%d" % irq_pin)
+    if spi_hz:
+        defines.append("-DBENCH_SPI_HZ=%d" % spi_hz)
+    if defines:
+        cmd += ["--build-property", "compiler.cpp.extra_flags=" + " ".join(defines)]
     subprocess.run(cmd + [sketch], check=True)
     # The core's reset-and-deploy helper only works with the real device node,
     # not with the /dev/serial/by-id symlink.
@@ -285,20 +291,62 @@ def t_rxflood(p, host_ip, count=3000):
     receiver must work normally afterwards."""
     p.cmd("RESET", "OK")
     # Big frames, no pacing: they reach the board back to back at the 10 Mbit/s of
-    # its port, faster than the 3.5 MHz SPI link can drain the 4 KB receive buffer.
+    # its port. At the default SPI clock the chip cannot drain its 4 KB receive buffer
+    # as fast, and overflows; at a clock of 16 MHz or more it keeps up with the wire and
+    # the switch drops the frames before they get there. Either way what arrives has to
+    # be intact, and the receiver has to be in step afterwards (rxoverflow overflows the
+    # buffer on purpose, whatever the clock).
     s = stream_rx(p, host_ip, count, 0, [1472, 1200, 800], pace=False)
     intact = num(s, "dup") == 0 and num(s, "stale") == 0 and num(s, "bad") == 0 and num(s, "peekbad") == 0
     got, lost = num(s, "bench"), count - num(s, "bench")
-    # lost == 0 would mean the test did not overload anything; hasRXError() has to have said so
-    ok1 = intact and got > 0 and lost > 0 and num(s, "peekrxe") > 0
+    ok1 = intact and got > 0
     wait_quiet(p)  # frames queued in the switch keep arriving for a while after the flood
     p.cmd("RESET", "OK")
     s2 = stream_rx(p, host_ip, 50, 0.01, [100])
     ok2 = (num(s2, "bench") == 50 and num(s2, "gap") == 0 and num(s2, "bad") == 0 and
            num(s2, "dup") == 0 and num(s2, "stale") == 0)
-    record("rxflood", ok1 and ok2, "flood of %d frames: %d received intact, %d lost to overflow (hasRXError() said so %s "
-           "times), dup=%s stale=%s bad=%s, recoveries=%s; clean stream afterwards: %s/50" %
+    record("rxflood", ok1 and ok2, "flood of %d frames: %d received intact, %d lost (the buffer of the chip overflowed "
+           "in %s of the service passes), dup=%s stale=%s bad=%s, recoveries=%s; clean stream afterwards: %s/50" %
            (count, got, lost, s["peekrxe"], s["dup"], s["stale"], s["bad"], s["rxz"], s2["bench"]))
+
+
+def t_rxoverflow(p, host_ip, irq, count=12, plen=1472):
+    """The receive buffer overflows on purpose, at any SPI clock: the board does not serve the chip while full-size
+    frames come in. The oldest frames stay, the rest are dropped by the chip, the error is reported by
+    hasRXError() and cleared by the acknowledge, and the receiver is in step afterwards."""
+    p.cmd("RESET", "OK")
+    p.cmd("HOLD 1", "OK")
+    sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sk.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sk.bind((host_ip, 0))
+    for seq in range(count):
+        sk.sendto(make_payload(seq, plen), ("255.255.255.255", PORT_RX))
+        time.sleep(0.02)  # 1.2 ms on the wire each: the 4 KB buffer holds two of them
+    sk.close()
+    time.sleep(0.3)
+    before = kv(p.cmd("PEEK", "PEEK"))
+    line = num(stats(p), "int")
+    p.cmd("HOLD 0", "OK")
+    time.sleep(1.0)
+    s = stats(p)
+    after = kv(p.cmd("PEEK", "PEEK"))
+    line_after = num(s, "int")
+    p.cmd("RESET", "OK")
+    s2 = stream_rx(p, host_ip, 50, 0.01, [100])
+    held, flags = num(before, "avail"), num(before, "flags")
+    ok = (flags & 0x41 == 0x41 and 2 <= held < count and (not irq or line == 0) and
+          1 <= num(s, "bench") <= held and num(s, "gap") == 0 and num(s, "bad") == 0 and num(s, "dup") == 0 and
+          num(s, "stale") == 0 and num(s, "rxz") == 0 and num(s, "peekbad") == 0 and
+          num(s, "peekrxe") >= 1 and num(s, "rxe") >= 1 and
+          num(after, "pkt") == 0 and not num(after, "flags") & 0x01 and (not irq or line_after == 1) and
+          num(s2, "bench") == 50 and num(s2, "gap") == 0 and num(s2, "bad") == 0)
+    record("rxoverflow", ok,
+           "%d full-size frames sent to a board that does not serve the chip: it held %d frames, flags 0x%02X%s; "
+           "after serving it %s of the %d bench frames were received intact (gap=%s bad=%s dup=%s), the error was "
+           "reported %s times and acknowledged (flags 0x%02X)%s; clean stream %s/50" %
+           (count, held, flags, ", INT line %s" % ("low" if line == 0 else "HIGH") if irq else "",
+            s["bench"], count, s["gap"], s["bad"], s["dup"], s["peekrxe"], num(after, "flags"),
+            ", INT line %s" % ("high" if line_after == 1 else "LOW") if irq else "", s2["bench"]))
 
 
 def t_echo(p, host_ip, pico_ip, count=200):
@@ -432,7 +480,7 @@ def wait_link(p, timeout=25):
     return False
 
 
-def t_spi(p, ip, assert_up_to, rounds=2000):
+def t_spi(p, ip, assert_up_to, expect_hz, rounds=2000):
     """Data through every kind of access at several SPI clocks. What the wiring can carry is not up to the
     library, so only the clocks up to --spi-assert-mhz have to be clean; the faster ones are reported."""
     ok, notes = True, []
@@ -453,7 +501,7 @@ def t_spi(p, ip, assert_up_to, rounds=2000):
             info("spi", line + " (above --spi-assert-mhz: not a failure)")
     link = wait_link(p)
     replies = ping_replies(ip) if link else 0
-    ok = ok and link and replies == 5 and default_hz == 8000000
+    ok = ok and link and replies == 5 and default_hz == expect_hz
     record("spi", ok, "default clock %.1f MHz; %s; link %s, ping %d/5" %
            (default_hz / 1e6, "; ".join(notes), "up" if link else "DOWN", replies))
 
@@ -750,6 +798,7 @@ def main():
     ap.add_argument("--fqbn", default="rp2040:rp2040:rpipico")
     ap.add_argument("--flash", action="store_true", help="compile and upload BenchTest first")
     ap.add_argument("--irq", type=int, metavar="GPIO", help="the board is the interrupt build, INT wired to this GPIO")
+    ap.add_argument("--spi-hz", type=int, metavar="HZ", help="with --flash, build with this SPI clock instead of the default")
     ap.add_argument("--alt-ip", help="a second free IPv4 address, for the setmac test (default: --ip plus two)")
     ap.add_argument("--spi-assert-mhz", type=float, default=10.0,
                     help="the spi test fails if a clock up to this many MHz is not clean (default 10)")
@@ -760,7 +809,7 @@ def main():
 
     port = find_port(args.port)
     if args.flash:
-        flash(port, args.fqbn, args.irq)
+        flash(port, args.fqbn, args.irq, spi_hz=args.spi_hz)
     host_ip = local_ip_for(args.ip)
     head, _, last = args.ip.rpartition(".")
     alt_ip = args.alt_ip or "%s.%d" % (head, int(last) + 2)
@@ -777,7 +826,7 @@ def main():
         if "pioful" in wanted:
             t_pioful(p)
         if "spi" in wanted:
-            t_spi(p, args.ip, args.spi_assert_mhz * 1e6)
+            t_spi(p, args.ip, args.spi_assert_mhz * 1e6, args.spi_hz or DEFAULT_SPI_HZ)
         if "ping" in wanted:
             t_ping(p, args.ip)
         if "rx" in wanted:
@@ -794,6 +843,8 @@ def main():
             t_soak(p, host_ip)
         if "rxflood" in wanted:
             t_rxflood(p, host_ip)
+        if "rxoverflow" in wanted:
+            t_rxoverflow(p, host_ip, args.irq is not None)
         if "discard" in wanted:
             t_discard(p, host_ip, args.irq is not None)
         if "callback" in wanted:
