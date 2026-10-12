@@ -1,64 +1,90 @@
-# pico-enc28j60
+# PicoENC28J60
 
-The code in this repository implements an ENC28J60 driver for Raspberry Pi Pico.
-The implementation is split into two libraries. A base library that provides the
-infrastructure necessary for communication with the device, and a driver for the
-FreeRTOS TCP stack. If you happen to use a different stack, you can easily write
-your own driver using the base library and taking the FreeRTOS driver as an
-example.
+[![CI](https://github.com/angeloINTJ/pico-enc28j60/actions/workflows/ci.yml/badge.svg)](https://github.com/angeloINTJ/pico-enc28j60/actions/workflows/ci.yml)
 
-**This repository also includes an Arduino IDE compatible library wrapper** (PicoENC28J60)
-that provides a C++ class interface while preserving all the original C driver functionality.
+Ethernet for the Raspberry Pi Pico in the Arduino IDE, with an ENC28J60 module. The
+library has two layers, and you use the one you need:
 
----
+ * `PicoENC28J60` (`PicoENC28J60.h`) sends and receives whole Ethernet frames and
+   leaves the protocols to you.
+ * `PicoENC28J60lwIP` (`PicoENC28J60lwIP.h`) is the same driver as a network
+   interface of the lwIP stack in the
+   [arduino-pico](https://github.com/earlephilhower/arduino-pico) core: DHCP, TCP and
+   UDP sockets, `WiFiClient`, `WiFiServer`, `WebServer` and everything else that is
+   built on lwIP.
 
-## RP2040 resources used
----------------------
+It is a fork of [pico-enc28j60](https://github.com/ljanyst/pico-enc28j60) by Lukasz
+Janyst, whose PIO program for SPI and ENC28J60 driver in C it is built on; see
+[Credits and license](#credits-and-license).
 
-The base driver uses:
+## Features
 
- * 5 GPIOs for communication with the device: 4 for SPI and 1 for the interrupt
-   signal.
- * The SPI GPIOs are driven by a PIO program that is 18 instructions long and
-   uses 1 state machine, which the driver claims so that other users of the PIO
-   (SerialPIO, tone, Servo, ...) are given another one. The hardware SPI is not
-   used because the device commands are variable length.
- * In non-blocking mode, the driver uses 3 DMA channels: 1 for data reception
-   and two for scatter-gather transmission.
+ * **SPI on any free pins.** The link to the chip is a PIO program, so the hardware SPI
+   blocks stay free. It claims one PIO state machine and leaves the others to
+   `SerialPIO`, `Servo`, `tone` and the like.
+ * **The INT pin is optional.** Wired, a frame is served the moment it arrives and an
+   idle network costs no SPI traffic. Not wired, the chip is polled, and sooner right
+   after a frame went out or came in.
+ * **It does not hang.** `begin()` returns `false` when it cannot start and
+   `lastError()` says why: a pin that is out of range or used twice, a state machine
+   that is taken, no PIO with room, no chip answering. A PIO that stops running in the
+   middle of a transfer, a chip that is reset by a glitch of its supply and a cable
+   that is unplugged and plugged back are noticed and dealt with.
+ * **The silicon errata that matter** (issues 6, 12, 13 and 14 of the
+   [errata sheet](#references)) are worked around.
+ * **Checked on real hardware** by a test bench that is part of the repository, and
+   compiled by the CI for the Pico, Pico W, Pico 2 and Pico 2 W with the oldest and
+   the newest supported cores. See [Testing](#testing).
 
-The FreeRTOS driver spawns a task and requires two task notifications to
-function: one for device interrupt and one for DMA completion interrupt.
+## Hardware
 
----
-
-## ENC28J60 Hardware
------------------
-
-ENC28J60 is a 3.3V chip and there's a bunch of breakout boards available for it
-that can be used directly with Pico.
+The ENC28J60 is a 3.3 V chip, and there are many breakout boards for it that can be
+used directly with a Pico.
 
 ![ENC28J60 Board](imgs/enc28j60-board.webp)
 
-There's also an Arduino Nano shield designed for a 5V operation. Coincidentally,
-that's the board that has been used for the development of this driver, but it
-needs to be modified before it can be used with Pico.
+### Wiring
+
+The defaults of `ENC28J60Config`. Every pin can be changed.
+
+| ENC28J60 board | Pico      | `ENC28J60Config` | Notes |
+|----------------|-----------|------------------|-------|
+| SCK            | GP2       | `sclk_pin`       | |
+| SI (MOSI)      | GP3       | `mosi_pin`       | |
+| SO (MISO)      | GP4       | `miso_pin`       | |
+| CS             | GP5       | `cs_pin`         | any GPIO; it does not have to be next to SCK |
+| RST            | GP7       | `rst_pin`        | optional; with -1 the chip is reset over SPI only |
+| INT            | not wired | `irq_pin`        | optional; the GPIO wired to INT, -1 for none |
+| VCC            | 3V3(OUT)  |                  | the chip is a 3.3 V one |
+| GND            | GND       |                  | |
+
+The library takes one state machine of one PIO block, 18 instructions of its program
+memory (the program is loaded once per block and shared), and no DMA channel. The
+hardware SPI is not used, because the commands of the chip are of variable length.
+
+<details>
+<summary>The Arduino Nano shield, which needs a modification</summary>
+
+There's also an Arduino Nano shield with an ENC28J60, designed for a 5 V operation.
+Coincidentally, that's the board that has been used for the development of the
+original driver, but it needs to be modified before it can be used with a Pico.
 
 ![ENC28J60 Arduino Nano Shield](imgs/enc28j60-nano.webp)
 
-The AMS1117 voltage regulator (marked blue) used to drop the supply voltage to
-3.3V needs to be removed, as we are going to use the Pico's 3.3V output to
-supply the device directly. The MM74HCT08M AND gate (marked green) used as a
-buffer to raise the voltage of the MOSI and interrupt signals to 5V needs to be
-removed as well because Pico can't tolerate GPIO input voltage this high. The
-connectors for Vin and Vout pins of the voltage regulator need to be shorted
-(marked blue on the picture below) and so do the inputs and outputs of the
-AND gates responsible for the MOSI and IRQ signals (marked green).
+The AMS1117 voltage regulator (marked blue) used to drop the supply voltage to 3.3 V
+needs to be removed, as we are going to use the Pico's 3.3 V output to supply the
+device directly. The MM74HCT08M AND gate (marked green) used as a buffer to raise the
+voltage of the MOSI and interrupt signals to 5 V needs to be removed as well because
+a Pico can't tolerate a GPIO input voltage this high. The connectors for the Vin and
+Vout pins of the voltage regulator need to be shorted (marked blue on the picture
+below) and so do the inputs and outputs of the AND gates responsible for the MOSI and
+IRQ signals (marked green).
 
 ![Modified ENC28J60 Arduino Nano Shield](imgs/enc28j60-nano-moded.webp)
 
 The relevant pins on this board are:
 
- * 5V - where we connect the Pico's 3.3V output
+ * 5V - where we connect the Pico's 3.3 V output
  * GND - for ground, all of them are connected and will work fine
  * D13 - SPI clock
  * D12 - MISO
@@ -66,40 +92,30 @@ The relevant pins on this board are:
  * D10 - Slave Select
  * D2 - Interrupt
 
----
+</details>
 
-## Arduino IDE Support
---------------------
-
-The Arduino library (`PicoENC28J60`) targets the Raspberry Pi Pico (RP2040) with the
-[arduino-pico](https://github.com/earlephilhower/arduino-pico) core. It has two layers:
-
- * `PicoENC28J60.h` - a raw Ethernet frame driver. You send and receive whole
-   frames. The SPI link is a PIO program, so any free pins will do.
- * `PicoENC28J60lwIP.h` - the same driver as a network interface of the lwIP
-   stack in the core: DHCP, TCP and UDP sockets, `WiFiClient`, `WiFiServer`,
-   `WebServer` and everything else built on lwIP. Header only.
-
-### Installation
+## Installation
 
 Install it from this repository; the Arduino Library Manager does not list it yet:
 
  * Arduino IDE: download `PicoENC28J60-<version>.zip` from the
    [latest release](https://github.com/angeloINTJ/pico-enc28j60/releases/latest),
    then *Sketch > Include Library > Add .ZIP Library*.
- * From a clone, which makes it easy to stay up to date: clone the repository
-   into your Arduino libraries folder (usually `~/Arduino/libraries`).
+ * From a clone, which makes it easy to stay up to date: clone the repository into
+   your Arduino libraries folder (usually `~/Arduino/libraries`).
  * PlatformIO with the arduino-pico core:
    `lib_deps = https://github.com/angeloINTJ/pico-enc28j60.git#v1.1.0`
 
 What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 
 Requirements: the [arduino-pico](https://github.com/earlephilhower/arduino-pico) core,
-4.0.0 or newer for `PicoENC28J60.h` (built with 4.0.0, 5.0.0 and 6.x) and 5.6.0 or newer
-for `PicoENC28J60lwIP.h` (built with 5.6.0 and 6.x). The Arduino Mbed OS RP2040 boards are
-not supported. Everything was run on 6.3.0.
+4.0.0 or newer for `PicoENC28J60.h` (built with 4.0.0, 5.0.0 and 6.x) and 5.6.0 or
+newer for `PicoENC28J60lwIP.h` (built with 5.6.0 and 6.x). The Arduino Mbed OS RP2040
+boards are not supported. Everything was run on 6.3.0.
 
-### Quick start: a web page that toggles the LED
+## Quick start
+
+### A web page that toggles the LED
 
 `examples/WebServerLedToggle` gets an address from DHCP and serves a page with a
 *Toggle LED* button. The network part is just:
@@ -116,7 +132,7 @@ void setup() {
 }
 ```
 
-### Quick start: raw frames
+### Raw frames
 
 ```cpp
 #include <PicoENC28J60.h>
@@ -146,12 +162,12 @@ Other pins or MAC address: fill in an `ENC28J60Config` and pass it to
 `eth.begin(config)`. By default the library picks any PIO block with room for its
 program and a free state machine; `pio_instance` and `pio_sm` choose them yourself.
 
-### Using the INT pin
+## Using the INT pin
 
 Wire the chip's INT pin to a free GPIO and give its number as `irq_pin`. The chip
 pulls the line low when a frame arrives, the link changes or its receive buffer
-overflows. `loop()` then asks `interruptPending()`, which only looks at that line
-and costs no SPI traffic, and talks to the chip when the answer is yes:
+overflows. `loop()` then asks `interruptPending()`, which only looks at that line and
+costs no SPI traffic, and talks to the chip when the answer is yes:
 
 ```cpp
 ENC28J60Config config;
@@ -168,166 +184,40 @@ void loop() {
 }
 ```
 
-The same loop works without the wire (`irq_pin` left at -1): `interruptPending()`
-then reads the chip's flags instead. The library sets the pin up with the
-internal pull-up and attaches the interrupt through the Arduino core, so your own
-`attachInterrupt()` calls keep working.
+The same loop works without the wire (`irq_pin` left at -1): `interruptPending()` then
+reads the chip's flags instead. The library sets the pin up with the internal pull-up
+and attaches the interrupt through the Arduino core, so your own `attachInterrupt()`
+calls keep working.
 
 An interrupt handler registered with `setInterruptCallback()` runs in interrupt
-context and must not call this class: the chip is reached over one PIO state
-machine, and a transfer started from the handler in the middle of one of the main
-program corrupts both. Set a flag there and use `interruptPending()` in `loop()`.
-See `examples/AdvancedTest`. With `PicoENC28J60lwIP` the same `irq_pin` makes the
-network stack serve a frame the moment it arrives, see below.
+context and must not call this class: the chip is reached over one PIO state machine,
+and a transfer started from the handler in the middle of one of the main program
+corrupts both. Set a flag there and use `interruptPending()` in `loop()`. See
+`examples/AdvancedTest`. With `PicoENC28J60lwIP` the same `irq_pin` makes the network
+stack serve a frame the moment it arrives, see below.
 
-### Hardware test
+## API reference
 
-`extras/bench` has a test that runs against a real board and your LAN: ping,
-receive and echo streams, transmit streams, a long soak and a receiver overload.
-See `extras/bench/README.md`.
+### ENC28J60Config
 
----
-
-## Using in a CMake Project (Original)
-------------------
-
-Simply add this repository as a submodule and include it in your master
-CMakeLists.txt as follows:
-
-```
-set(ENABLE_ENC28J60_FREERTOS_DRIVER FALSE)
-add_subdirectory(lib/pico-enc28j60/src)
-```
-
-The FreeRTOS driver may be switched on or off.
-
----
-
-## Base driver setup (Original C API)
------------------
-
-Driver can be configured through an enc28j60_config instance. It can be
-created and initialized to defaults using enc28j60_get_default_config(). The
-struct has the following fields:
-
- * pio - a PIO instance to be used for SPI: pio0 or pio1, or NULL (the default) to
-         let the driver look for any one with room and a free state machine
- * sm - index to the state machine to run the PIO program, or ENC28J60_SM_ANY (the
-        default); the state machine is claimed
- * miso_pin - defaults to 16
- * mosi_pin - defaults to 17
- * sclk_pin - defaults to 18
- * cs_pin - slave select, defaults to 19
- * irq_pin - defaults to 20
- * dma_irq - interrupt channel to handle DMA IRQs, defaults to 0
- * rx_size - the device has 8kB big buffer that is used for RX and TX queues
-               the range from 0 to rx_size - 1 will be used for RX, the
-               reminder for TX; defaults to 0x1000
- * mac_addr - MAC address of the device
- * irq_cb - callback function for the device interrupts
- * irq_data - data for the callback
- * notify - notification helper described below
-
-The DMA notification struct looks as follows:
-
-```c
-typedef struct {
-    void (*notify)(void *);
-    void (*wait)(void *);
-    void *data;
-} enc28j60_notification;
-```
-
-The notify function is called in an interrupt context to wake a task that is
-going to service the interrupt, while wait blocks that task until an interrupt
-has been raised. data is passed to both functions when they are called.
-
----
-
-## FreeRTOS setup (Original)
---------------
-
-When using the FreeRTOS driver, especially in a multicore setup, it is important
-to ensure the consistency of heap operations. Consider adding
-PICO_USE_MALLOC_MUTEX to your global defines:
-
-```cmake
-add_definitions(
-  -DPICO_USE_MALLOC_MUTEX
-)
-```
-
-and configuring the FreeRTOS-Pico sync interop in your FreeRTOSConfig.h:
-
-```c
-#define configSUPPORT_PICO_SYNC_INTEROP 1
-```
-
-The FreeRTOS driver is normally initialized the following way assuming that most
-of the driver configuration options are left at their defaults:
-
-```c
-#include <pico/enc28j60-driver.h>
-#include <pico/enc28j60-freertos-driver.h>
-
-enc28j60_freertos_interface iface;
-static NetworkEndPoint_t endpoint_v4;
-static NetworkEndPoint_t endpoint_v6_link;
-
-void setup_network()
-{
-    memset(&iface, 0, sizeof(enc28j60_freertos_interface));
-    enc28j60_config *drv_cfg = enc28j60_get_default_config();
-
-    // Choose a MAC address
-    memcpy(drv_cfg->mac_addr, mac_addr, 6);
-
-    // Interface setup
-    iface.iface.pcName = "e0";
-    iface.iface.pvArgument = drv_cfg;
-    iface.iface.pfInitialise = enc28j60_freertos_initialize;
-    iface.iface.pfOutput = enc28j60_freertos_output_frame;
-    iface.iface.pfGetPhyLinkStatus = enc28j60_freertos_get_phy_link_status;
-    FreeRTOS_AddNetworkInterface(&iface.iface);
-
-    // IPv4
-    memset(&endpoint_v4, 0, sizeof(endpoint_v4));
-    // The ip, net_mask, and gateway below may just be zeros if DHCP is used
-    FreeRTOS_FillEndPoint(&iface.iface, &endpoint_v4, (uint8_t *)&ip,
-                          (uint8_t *)&net_mask, (uint8_t *)&gateway,
-                          (uint8_t *)&any_ip, cfg->mac_addr);
-
-    endpoint_v4.bits.bWantDHCP = pdTRUE;
-
-    // IPv6 Link Scope endpoint. A global unicast address requires another
-    // endpoint.
-    memset(&endpoint_v6_link, 0, sizeof(endpoint_v6_link));
-    IPv6_Address_t prefix;
-    IPv6_Address_t address;
-    FreeRTOS_inet_pton6("fe80::", &prefix);
-    memcpy(&address, cfg->ipv6_addr_link, 16);
-
-    FreeRTOS_FillEndPoint_IPv6(&iface.iface, &endpoint_v6_link, &address,
-                               &prefix, 64, NULL, NULL, cfg->mac_addr);
-
-    FreeRTOS_IPInit_Multi();
-}
-```
-
----
-
-## Arduino API Reference
--------------------
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `sclk_pin`, `mosi_pin`, `miso_pin` | 2, 3, 4 | the SPI pins |
+| `cs_pin` | 5 | chip select, any GPIO |
+| `rst_pin` | 7 | reset of the chip; -1 for none |
+| `irq_pin` | -1 | the GPIO wired to INT; -1 when it is not wired |
+| `mac_addr` | all zeros | the MAC address. Left at zeros, `begin()` makes a locally administered one from the unique ID of the board, so that two boards never share it; `getMACAddress()` says which |
+| `rx_buffer_size` | `0x1000` | bytes of the 8 KB of the chip used for reception, the rest is the transmit area. Rounded down to an even number and kept between `0x0600` and `0x1A00`, so that both hold a full frame |
+| `pio_instance`, `pio_sm` | -1, -1 | the PIO block (0, 1, ...) and the state machine (0-3) to claim; -1 lets the driver take any that is free |
 
 ### PicoENC28J60
 
- * `PicoENC28J60(const ENC28J60Config& config = ENC28J60Config())` - pins, MAC
-   address and buffer split live in `ENC28J60Config`.
- * `bool begin()`, `bool begin(const ENC28J60Config&)` - initialize. Returns
-   `false` when it cannot, and can be called again; `lastError()` says why (an
-   `Error` value) and `PicoENC28J60::errorString(error)` turns it into text: a pin
-   that is out of range or used twice, a state machine that is taken, no PIO with
-   room for the program, no chip answering, no memory.
+ * `PicoENC28J60(const ENC28J60Config& config = ENC28J60Config())`
+ * `bool begin()`, `bool begin(const ENC28J60Config&)` - initialize. Returns `false`
+   when it cannot, and can be called again; `lastError()` says why (an `Error` value)
+   and `PicoENC28J60::errorString(error)` turns it into text: a pin that is out of
+   range or used twice, a state machine that is taken, no PIO with room for the
+   program, no chip answering, no memory.
  * `void end()` - stops the chip and gives back the state machine, the pins and the
    memory; `begin()` starts it again. The destructor calls it.
  * `bool linkStatus()` - the link takes a second or two to come up after `begin()`.
@@ -336,99 +226,131 @@ void setup_network()
  * `bool sendFrame(const uint8_t* frame, uint16_t len)` - blocking, up to
    `MAX_FRAME_SIZE` (1514) bytes, without the FCS.
  * `uint8_t available()` - frames waiting in the receive buffer.
- * `uint16_t receiveFrame(uint8_t* buffer, uint16_t max_len)` - length without
-   the FCS, 0 if there is none. `void discardFrame()` drops the next frame.
+ * `uint16_t receiveFrame(uint8_t* buffer, uint16_t max_len)` - length without the
+   FCS, 0 if there is none. `void discardFrame()` drops the next frame.
  * INT pin (`irq_pin`): `interruptPending()` (the pin, no SPI traffic),
    `getInterruptFlags()` (reads the flags and masks the pin),
    `acknowledgeInterrupts(flags)` (clears them and unmasks the pin),
    `interruptCount()`. Looking without touching the pin: `peekInterruptFlags()`,
-   `hasPacket()`, `hasLinkChange()`, `hasRXError()` (`hasTXComplete()` is of
-   little use: `sendFrame()` already waits for the frame to leave the wire).
+   `hasPacket()`, `hasLinkChange()`, `hasRXError()` (`hasTXComplete()` is deprecated:
+   `sendFrame()` already waits for the frame to leave the wire).
    `setInterruptCallback()` and `poll()` are for a handler that only sets a flag.
-   `hasPacket()` and `INT_PACKET_RX` come from the packet counter of the chip,
-   because its packet flag is not reliable (silicon errata, issue 6).
- * `const Stats& stats()` - frame counters, for diagnostics: frames in and out,
-   `tx_failures`, `tx_aborts` (the MAC gave up), `tx_retries` (a late collision
-   was retried), `io_errors` and `recoveries` (see below).
- * `void* getDriverHandle()` - the handle of the C driver.
+   `hasPacket()` and `INT_PACKET_RX` come from the packet counter of the chip, because
+   its packet flag is not reliable (silicon errata, issue 6).
+ * `bool checkChip()` - one SPI transaction that tells whether the chip still holds its
+   configuration; if it was reset, it is configured again. Once a second is plenty.
+ * `const Stats& stats()` - frame counters, for diagnostics: `rx_frames`,
+   `rx_dropped`, `rx_resets`, `tx_frames`, `tx_failures`, `tx_aborts` (the MAC gave
+   up), `tx_retries` (a late collision was retried), `io_errors`, `recoveries` and
+   `chip_resets` (see [Robustness](#robustness-and-limitations)).
+ * `void* getDriverHandle()` - the handle of the C driver, for code that wants to call
+   its [C API](docs/c-driver.md) directly.
 
 ### PicoENC28J60lwIP
 
-Same API as the other wired Ethernet interfaces of the core (`begin()`,
-`config()`, `connected()`, `localIP()`, `linkStatus()`, ...), plus
-`setPollPeriod(ms)` and `driverStats()`. Do not call the raw driver methods
-while it runs. Tested on a Pico (RP2040) only. When the cable is unplugged and
-plugged back, lwIP is told and asks the DHCP server again.
+Same API as the other wired Ethernet interfaces of the core (`begin()`, `config()`,
+`connected()`, `localIP()`, `linkStatus()`, ...), plus `end()`, `lastError()`,
+`setPollPeriod(ms)` and `driverStats()`. `begin()` returns `false` when no chip answers;
+without a MAC address of your own, the core makes a locally administered one from the
+board. Do not call the raw driver methods while it runs. Tested on a Pico (RP2040)
+only. When the cable is unplugged and plugged back, lwIP is told and asks the DHCP
+server again.
 
-Give it a config with `irq_pin` set and it is driven by the INT line: the
-interrupt handler only wakes the lwIP context up, which then reads the frames, so
-the chip is never touched from interrupt context. On the bench that took the median
-time of a `GET /` from 16 ms to 11 ms and made an idle network free of SPI
-traffic. The timer of `setPollPeriod()` remains as a safety net (20 ms then).
+Give it a config with `irq_pin` set and it is driven by the INT line: the interrupt
+handler only wakes the lwIP context up, which then reads the frames, so the chip is
+never touched from interrupt context. On the bench that took the median time of a
+`GET /` from 16 ms to 11 ms and made an idle network free of SPI traffic. The timer of
+`setPollPeriod()` remains as a safety net (20 ms then).
 
-Without the INT pin the chip is polled: every 5 ms while the line is quiet, and
-every millisecond right after a frame went out or came in, backing off to 5 ms
-again when nothing arrives. The peer's answer to a frame is usually on its way,
-and a fixed period made the time of a request depend on where the timer happened to
-fall (13 ms or 18 ms for the same page on the bench); with the adaptive period it
-is 10 to 11 ms.
-
----
+Without the INT pin the chip is polled: every 5 ms while the line is quiet, and every
+millisecond right after a frame went out or came in, backing off to 5 ms again when
+nothing arrives. The peer's answer to a frame is usually on its way, and a fixed period
+made the time of a request depend on where the timer happened to fall (13 ms or 18 ms
+for the same page on the bench); with the adaptive period it is 10 to 11 ms.
 
 ## Robustness and limitations
----------------------------
 
 What the library does when things go wrong:
 
  * **A PIO that does not run.** Another piece of code taking the state machine, or
-   stopping it, would leave a blocking SPI transfer waiting forever. Transfers give
-   up after about 8 ms without progress and read zeros; the class counts it
-   (`stats().io_errors`), restarts the state machine and the chip, and counts that
-   too (`stats().recoveries`), trying again every second while the chip does not
-   answer. Frames in the chip's buffers are lost in the process.
+   stopping it, would leave a blocking SPI transfer waiting forever. Transfers give up
+   after about 8 ms without progress and read zeros; the class counts it
+   (`stats().io_errors`), restarts the state machine and the chip, and counts that too
+   (`stats().recoveries`), trying again every second while the chip does not answer.
+   Frames in the chip's buffers are lost in the process.
+ * **A chip that was reset**, by a glitch of its supply say, is back at its default
+   registers with the receiver off, and nothing else would tell. `checkChip()` finds
+   out and configures it again (`stats().chip_resets`); `PicoENC28J60lwIP` calls it
+   once a second.
  * **A frame the MAC gives up on** after a late collision, which some link partners
-   provoke in half duplex (silicon errata, issue 13), is sent again, up to 15
-   times (`stats().tx_retries`). Any other abort is final and `sendFrame()`
-   returns `false` (`stats().tx_aborts`).
+   provoke in half duplex (silicon errata, issue 13), is sent again, up to 15 times
+   (`stats().tx_retries`). Any other abort is final and `sendFrame()` returns `false`
+   (`stats().tx_aborts`).
  * **A receive buffer that overflows** loses frames; `INT_RX_ERROR` tells you.
 
 What it does not do:
 
- * It is 10 Mbit/s and **half duplex** only, as the chip is. The link partner has
-   to detect that by itself, which every switch and router does.
+ * It is 10 Mbit/s and **half duplex** only, as the chip is. The link partner has to
+   detect that by itself, which every switch and router does.
  * SPI runs at 3.5 MHz, so a full-size frame takes about 3.5 ms to move between the
    chip and the Pico, and the throughput is well below the 10 Mbit/s of the wire.
- * `sendFrame()` and the receiving functions block while they talk to the chip;
-   they are not meant to be called from interrupt handlers.
+ * `sendFrame()` and the receiving functions block while they talk to the chip; they
+   are not meant to be called from interrupt handlers.
  * **Tested on** a Raspberry Pi Pico (RP2040) with an ENC28J60 revision B7 and the
    arduino-pico core 6.3.0. The sketches also compile for the Pico W, Pico 2 and
-   Pico 2 W, but have not been run on them. The FreeRTOS+TCP driver is the one of
-   the original project, and was not built or run here.
+   Pico 2 W, but have not been run on them. The FreeRTOS+TCP driver is the one of the
+   original project, and was not built or run here.
  * The receive buffer of the chip is small (4 KB, 6.5 KB at most with
    `rx_buffer_size = 0x1A00`; the transmit side only needs one frame) and reading a
-   frame from it takes 3.5 ms, while one can arrive every 1.2 ms. A peer that sends
-   a window of data at once, like several bulk TCP transfers at the same time,
-   overflows it, and TCP recovers slowly: one connection echoes 200 kB at about
-   50 kB/s on the bench, and requests and answers are fine.
-
----
+   frame from it takes 3.5 ms, while one can arrive every 1.2 ms. A peer that sends a
+   window of data at once, like several bulk TCP transfers at the same time, overflows
+   it, and TCP recovers slowly: one connection echoes 200 kB at about 50 kB/s on the
+   bench, and requests and answers are fine.
 
 ## Examples
----------
 
-See the examples/ folder:
-- WebServerLedToggle - a web page with a Toggle LED button (lwIP, DHCP). Checked
-  with a real browser on the bench.
-- BasicTest - raw frames: initialization, link, receive and print, send a test frame
-  (a broadcast with the experimental EtherType 0x88B5, never an ARP or ICMP that
-  could confuse a real network)
-- AdvancedTest - interrupt mode (needs INT wired to GP6), custom MAC, frame parsing.
-  Checked on the bench.
+See the `examples/` folder:
 
----
+ * `WebServerLedToggle` - a web page with a Toggle LED button (lwIP, DHCP). Checked
+   with a real browser on the bench.
+ * `BasicTest` - raw frames: initialization, link, receive and print, send a test
+   frame (a broadcast with the experimental EtherType 0x88B5, never an ARP or ICMP
+   that could confuse a real network).
+ * `AdvancedTest` - interrupt mode (needs INT wired to GP6), custom MAC, frame
+   parsing. Checked on the bench.
+
+## Testing
+
+Every push is built by the [CI](.github/workflows/ci.yml): `arduino-lint`,
+`clang-format`, a check that the PIO header matches its source, every sketch for four
+boards (the three that can use the INT pin also built with it), the oldest and the
+newest supported cores, and the C driver as a CMake library with the Pico SDK, with
+`-Werror` and, on the driver files, the static analyzer of GCC.
+
+The CI cannot test a network, so `extras/bench` has tests that run against a real
+board and your LAN, driven by Python scripts on the PC:
+
+| Script | Sketch | What it checks |
+|--------|--------|----------------|
+| `bench.py` | `BenchTest` | the raw class: ping, receive and echo streams, transmit streams, a long soak, a receiver overload, configuration errors, a PIO that does not run, a chip that is reset, and the INT pin |
+| `benchlwip.py` | `BenchLwip` | the lwIP interface: DHCP, ping both ways, TCP and UDP servers and clients, a cable that is pulled out, a chip that is reset, a static address, repeated `end()` and `begin()` |
+| `webtest.py` | `WebServerLedToggle` | the web example: sequential and parallel requests, 100 toggles, a soak |
+
+```
+python3 extras/bench/bench.py --ip 192.168.3.77 --flash --irq 6
+```
+
+`extras/bench/README.md` lists every test, what you need and how to run them.
+
+## The C driver and FreeRTOS
+
+The Arduino classes are built on the driver in C of the original project, which also
+works on its own in a Raspberry Pi Pico SDK project, and has a network interface for
+FreeRTOS+TCP. [docs/c-driver.md](docs/c-driver.md) has its documentation: CMake, the
+configuration, the asynchronous mode and the FreeRTOS setup, with the functions this
+fork added.
 
 ## Repository layout
------------------
 
 | Folder | Contents |
 |--------|----------|
@@ -436,42 +358,36 @@ See the examples/ folder:
 | `examples/` | Arduino sketches |
 | `extras/bench/` | Tests that run on the hardware; not compiled by the Arduino IDE |
 | `extras/tools/` | Scripts for whoever works on the library, like the one that regenerates the PIO header |
+| `docs/` | Documentation of the C driver |
 | `freertos/` | The FreeRTOS+TCP driver of the original project, outside `src/` so that the Arduino IDE does not compile it |
 | `imgs/` | Photographs used by this README |
 
----
-
 ## Reporting problems
--------------------
 
 Open an [issue](https://github.com/angeloINTJ/pico-enc28j60/issues). Say which board
 and which version of the arduino-pico core you use, how the chip is wired (the
-`ENC28J60Config` you pass), and, if you can run it, what `extras/bench/bench.py` prints.
-
----
+`ENC28J60Config` you pass), and, if you can run it, what `extras/bench/bench.py`
+prints.
 
 ## References
-----------
 
  * [ENC28J60 Data Sheet](https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/DataSheets/39662e.pdf)
  * [ENC28J60 Errata](https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/Errata/80349c.pdf)
 
----
-
 ## Credits and license
--------------------
 
-PicoENC28J60 is a fork of [pico-enc28j60](https://github.com/ljanyst/pico-enc28j60)
-by **Lukasz Janyst**, and his work is the foundation of everything here: the PIO
-program that speaks SPI to the chip, the ENC28J60 driver in C, the FreeRTOS+TCP
-driver, the documentation of that driver in this README and the photographs in
-`imgs/`. They are included with his copyright notice and under the MIT license he
-published them with. His 52 commits are part of the history of this repository too.
+PicoENC28J60 is a fork of [pico-enc28j60](https://github.com/ljanyst/pico-enc28j60) by
+**Lukasz Janyst**, and his work is the foundation of everything here: the PIO program
+that speaks SPI to the chip, the ENC28J60 driver in C, the FreeRTOS+TCP driver, the
+documentation of that driver (now in [docs/c-driver.md](docs/c-driver.md)) and the
+photographs in `imgs/`. They are included with his copyright notice and under the MIT
+license he published them with. His 52 commits are part of the history of this
+repository too.
 
-**Ângelo Moisés Alves** ([@angeloINTJ](https://github.com/angeloINTJ)) adapted it
-to the Arduino IDE: the C++ classes, the lwIP network interface, the examples, the
-on-hardware test bench, and the changes to the original driver that these needed
-(a chip select pin of its own, a driver that fails instead of hanging when no chip
+**Ângelo Moisés Alves** ([@angeloINTJ](https://github.com/angeloINTJ)) adapted it to
+the Arduino IDE: the C++ classes, the lwIP network interface, the examples, the
+on-hardware test bench, and the changes to the original driver that these needed (a
+chip select pin of its own, a driver that fails instead of hanging when no chip
 answers, fixes in the blocking receive and transmit paths, the INT pin).
 
 [NOTICE.md](NOTICE.md) says who wrote what, file by file. The project is released

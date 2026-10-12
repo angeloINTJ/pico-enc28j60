@@ -29,8 +29,9 @@ The foundation of this library. All of it comes from the upstream repository:
   (`src/enc28j60-driver.c`, `src/enc28j60-cmd.c`, `src/enc28j60-cmd.h`,
   `src/pico/enc28j60-driver.h`).
 * The network interface driver for FreeRTOS+TCP (`freertos/`).
-* The CMake build (`src/CMakeLists.txt`), the documentation of the C driver in
-  `README.md` and the photographs in `imgs/`.
+* The CMake build (`src/CMakeLists.txt`), the documentation of the C driver, which
+  was the `README.md` of the original and is `docs/c-driver.md` here, and the
+  photographs in `imgs/`.
 
 ## Ângelo Moisés Alves, Arduino port, 2026
 
@@ -49,7 +50,8 @@ Written for this fork:
   `BenchLwip.ino`, `benchlwip.py`, `webtest.py`) and `extras/tools/`.
 * `.github/workflows/ci.yml`.
 * `library.properties`, `keywords.txt`, `.gitattributes`, `NOTICE.md`,
-  `CHANGELOG.md`, the Arduino sections of `README.md`.
+  `CHANGELOG.md`, `README.md`, which describes the Arduino library, and the section
+  of `docs/c-driver.md` that lists what this fork added to the C driver.
 * `src/enc28j60-spi.pio.h` is the output of `pioasm` for the PIO program above,
   committed because the Arduino IDE cannot run `pioasm`.
 
@@ -95,6 +97,10 @@ Changes to Lukasz's files, which keep his copyright notice and carry a
   not answer. Moved out of `src/` so that the Arduino IDE does not try to compile
   it; `freertos/pico/enc28j60-freertos-driver.h` was moved and is unchanged.
 * `src/CMakeLists.txt`: paths adjusted for the files that moved.
-* `.gitignore`, `README.md`.
+* `docs/c-driver.md`: his documentation of the C driver, moved from `README.md`.
+  The text is his, updated where this fork changed what it describes (the length of
+  the PIO program, the state machine that is claimed, the `pio`, `sm` and `cs_pin`
+  fields) and with a list of the functions that were added.
+* `.gitignore`.
 
 Unchanged from the original: `.clang-format` and `imgs/*`.

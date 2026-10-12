@@ -105,8 +105,11 @@ silicon errata. The lwIP interface without the INT pin answers faster.
 * `PicoENC28J60lwIP` puts the pieces of a chain of buffers together before sending, instead
   of sending the first one only. The core never hands over a chain, so this is a guard.
 * `hasPacket()` is one read of the packet counter.
-* `README.md` has a section on what the library does when things go wrong and what it
-  does not do.
+* `README.md` is about the Arduino library from the first line on: a wiring table, the
+  configuration, a section on what the library does when things go wrong and what it
+  does not do, and one on testing. The documentation of the C driver and of the FreeRTOS
+  driver, which Lukasz Janyst wrote and which used to take half of it, is in
+  `docs/c-driver.md` now, with the functions this fork added to the driver.
 
 ## 1.1.0 - 2026-10-11
 
