@@ -249,7 +249,10 @@ stack serve a frame the moment it arrives, see below.
  * `const Stats& stats()` - frame counters, for diagnostics: `rx_frames`,
    `rx_dropped`, `rx_resets`, `tx_frames`, `tx_failures`, `tx_aborts` (the MAC gave
    up), `tx_retries` (a late collision was retried), `io_errors`, `recoveries` and
-   `chip_resets` (see [Robustness](#robustness-and-limitations)).
+   `chip_resets` (see [Robustness](#robustness-and-limitations)). `PicoENC28J60lwIP`
+   does not wait for a frame to leave the wire: the frame counts once it has, when the
+   next one goes out or the polling sees it, and one that fails after it was handed
+   over counts in `tx_failures`.
  * `void* getDriverHandle()` - the handle of the C driver, for code that wants to call
    its [C API](docs/c-driver.md) directly.
 
@@ -299,8 +302,9 @@ What the library does when things go wrong:
    once a second.
  * **A frame the MAC gives up on** after a late collision, which some link partners
    provoke in half duplex (silicon errata, issue 13), is sent again, up to 15 times
-   (`stats().tx_retries`). Any other abort is final and `sendFrame()` returns `false`
-   (`stats().tx_aborts`).
+   (`stats().tx_retries`). Any other abort is final (`stats().tx_aborts`):
+   `sendFrame()` returns `false`, and a frame of `PicoENC28J60lwIP` is lost, as on a
+   busy network: TCP sends it again.
  * **A receive buffer that overflows** loses frames; `INT_RX_ERROR` tells you.
 
 What it does not do:

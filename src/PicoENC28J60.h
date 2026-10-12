@@ -346,7 +346,10 @@ class PicoENC28J60 {
         uint32_t rx_resets; //!< times the receiver was reset because of a bad
                             //!< frame header
         uint32_t tx_frames; //!< frames sent
-        uint32_t tx_failures; //!< sendFrame() calls that failed
+        uint32_t tx_failures; //!< frames that did not go out: sendFrame()
+                              //!< returned false, or the lwIP interface,
+                              //!< which does not wait for the wire, had
+                              //!< handed the frame over already
         uint32_t tx_aborts; //!< frames the MAC gave up on, after the retries
         uint32_t tx_retries; //!< frames sent again after a late collision
         uint32_t io_errors; //!< times the PIO state machine did not run
@@ -394,6 +397,17 @@ class PicoENC28J60 {
     void (*_irq_callback)(void *);
     void *_irq_user_data;
     Stats _stats = {};
+
+    // Sending that does not wait for the wire, for the lwIP interface only:
+    // a frame goes into the chip while the one before is still on the wire.
+    // sendFrame() keeps waiting, as documented.
+    friend class PicoENC28J60LwipDriver;
+    static const uint32_t NO_FRAME = 0xFFFFFFFF; // ENC28J60_INVALID_FRAME_ID
+    uint32_t _txFrame = NO_FRAME; // on the wire, and not waited for yet
+    bool _sendQueued(const uint8_t *frame, uint16_t len);
+    bool _sendFinish();
+    void _sendPoll();
+    void _sendLost();
 
     void _hardwareReset();
     void _enableChipInterrupts();

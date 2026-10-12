@@ -265,6 +265,13 @@ void PicoENC28J60::end()
         return;
     }
 
+    // A frame that the lwIP interface left on the wire gets out first. Only
+    // then: _usable() would start a failed chip over, just to stop it.
+    if (_txFrame != NO_FRAME && _usable()) {
+        _sendFinish();
+    }
+    _sendLost();
+
     if (_irq_attached) {
         // The handler holds a pointer to this object: remove it before the
         // pin can be taken away from the chip
@@ -329,6 +336,7 @@ bool PicoENC28J60::_usable()
         _recoverWait = true;
         return false;
     }
+    _sendLost();
     _enableChipInterrupts();
     _recoverWait = false;
     _ioCounted = false;
@@ -367,6 +375,7 @@ bool PicoENC28J60::checkChip()
     // Configured again from the start, as after a failed transfer. If that does
     // not work the driver stays failed, and _usable() tries again.
     _stats.chip_resets++;
+    _sendLost();
     if (!enc28j60_recover(eth)) {
         return false;
     }
@@ -416,6 +425,8 @@ bool PicoENC28J60::sendFrame(const uint8_t *frame, uint16_t len)
         return false;
     }
 
+    // A frame that the lwIP interface left on the wire goes first
+    _sendFinish();
     enc28j60 *eth = driver(_eth);
 
     // Upload the frame to the transmit area; this fails if there is no room
@@ -440,6 +451,89 @@ bool PicoENC28J60::sendFrame(const uint8_t *frame, uint16_t len)
     }
     _stats.tx_frames++;
     return true;
+}
+
+// Puts frame into the chip while the frame before, if any, is still on the
+// wire, then waits for that one, and starts this one without waiting for it.
+// Only one transmission at a time: the transmit logic is reset before each
+// frame (silicon errata, issue 12), which may not cut the frame before short.
+bool PicoENC28J60::_sendQueued(const uint8_t *frame, uint16_t len)
+{
+    if (!_usable() || !frame || len == 0 || len > MAX_FRAME_SIZE) {
+        return false;
+    }
+
+    enc28j60 *eth = driver(_eth);
+    uint32_t frame_id = enc28j60_frame_upload_blk(eth, len, frame);
+    if (frame_id == ENC28J60_INVALID_FRAME_ID && _txFrame != NO_FRAME) {
+        // No room while the frame on the wire holds its space (a long receive
+        // buffer leaves a transmit area of one frame): wait for it first
+        _sendFinish();
+        frame_id = enc28j60_frame_upload_blk(eth, len, frame);
+    }
+    if (_failed() || frame_id == ENC28J60_INVALID_FRAME_ID) {
+        _stats.tx_failures++;
+        return false;
+    }
+
+    _sendFinish();
+    enc28j60_frame_tx_blk(eth, frame_id);
+    if (_failed()) {
+        _stats.tx_failures++;
+        return false;
+    }
+    _txFrame = frame_id;
+    return true;
+}
+
+// Waits for the frame that _sendQueued() left on the wire, sends it again
+// after a late collision, and counts it, as sendFrame() does for its own
+bool PicoENC28J60::_sendFinish()
+{
+    if (_txFrame == NO_FRAME) {
+        return true;
+    }
+    uint32_t frame_id = _txFrame;
+    _txFrame = NO_FRAME;
+    if (_failed()) {
+        // The chip is started over when the driver recovers: the frame is lost
+        _stats.tx_failures++;
+        return false;
+    }
+
+    uint8_t retries = 0;
+    enc28j60_tx_status result = enc28j60_frame_send_finish_blk(
+        driver(_eth), frame_id, TX_TIMEOUT_US, TX_MAX_RETRIES, &retries);
+    _stats.tx_retries += retries;
+    if (result != ENC28J60_TX_OK) {
+        _stats.tx_failures++;
+        if (result == ENC28J60_TX_ABORTED) {
+            _stats.tx_aborts++;
+        }
+        return false;
+    }
+    _stats.tx_frames++;
+    return true;
+}
+
+// Finishes the frame on the wire once it has ended, without waiting for it:
+// for the polling of the lwIP interface, so that the frame is counted and its
+// space given back when no other frame follows it
+void PicoENC28J60::_sendPoll()
+{
+    if (_txFrame != NO_FRAME && _usable() &&
+        enc28j60_frame_tx_ended_blk(driver(_eth))) {
+        _sendFinish();
+    }
+}
+
+// The chip was started over with a frame on the wire: it never got out
+void PicoENC28J60::_sendLost()
+{
+    if (_txFrame != NO_FRAME) {
+        _txFrame = NO_FRAME;
+        _stats.tx_failures++;
+    }
 }
 
 uint8_t PicoENC28J60::available()

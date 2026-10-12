@@ -155,7 +155,9 @@ class PicoENC28J60LwipDriver {
             data = joined;
             len = p->tot_len;
         }
-        bool sent = _eth.sendFrame(data, len);
+        // Into the chip while the frame before is still on the wire; that one
+        // is waited for now, this one by the next frame or by the polling
+        bool sent = _eth._sendQueued(data, len);
         free(joined);
         _traffic++;
         if (_sent) {
@@ -168,6 +170,9 @@ class PicoENC28J60LwipDriver {
     // held, which is what keeps the PIO state machine to one user at a time.
     uint16_t readFrameSize()
     {
+        // A frame that sendFrame() left on the wire is counted, and its space
+        // given back, once it has ended
+        _eth._sendPoll();
         if (!_receiving) {
             return 0; // the core's own polling gets none, see receive()
         }

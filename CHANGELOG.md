@@ -88,6 +88,17 @@ the PIO program) are part of the repository now.
   on the wire, and `enc28j60_frame_tx_ended_blk()`, which tells with one read whether it
   has ended.
 
+### Changed
+
+* `PicoENC28J60lwIP` puts a frame into the chip while the one before is still on the
+  wire, and waits for that one only when the next frame is ready to start, or when the
+  polling sees that it ended; `PicoENC28J60::sendFrame()` still waits for the wire. On
+  the bench (SPI clock 10 MHz, 2026-10-12), 500 UDP datagrams of 1472 bytes with no
+  pause went out at 632 kB/s polled and 636 kB/s with the INT pin, from 474 and 480
+  kB/s, and a TCP upload of 100 kB from the board took 168-170 ms instead of 238-291 ms.
+  `stats().tx_frames` counts such a frame once it has left the wire, and `tx_failures`
+  one that fails after it was handed over.
+
 ## 1.2.0 - 2026-10-12
 
 Robustness of the driver: it no longer hangs when the PIO does not run, shares the PIO
