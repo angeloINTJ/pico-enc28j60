@@ -83,6 +83,10 @@ the PIO program) are part of the repository now.
   bytes with no pause and times them. Every one has to arrive intact and be counted by
   the driver, and at the default SPI clock a frame has to take less than one that is
   uploaded and then waited for.
+* `enc28j60_frame_send_finish_blk()`, the second half of `enc28j60_frame_send_blk()`
+  after `enc28j60_frame_tx_blk()`, so that the next frame can be uploaded while one is
+  on the wire, and `enc28j60_frame_tx_ended_blk()`, which tells with one read whether it
+  has ended.
 
 ## 1.2.0 - 2026-10-12
 

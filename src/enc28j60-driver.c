@@ -990,16 +990,21 @@ enc28j60_tx_status enc28j60_frame_send_blk(enc28j60 *eth, uint32_t frame_id,
                                            uint8_t max_retries,
                                            uint8_t *retries)
 {
+    enc28j60_frame_tx_blk(eth, frame_id);
+    return enc28j60_frame_send_finish_blk(eth, frame_id, timeout_us,
+                                          max_retries, retries);
+}
+
+enc28j60_tx_status enc28j60_frame_send_finish_blk(enc28j60 *eth,
+                                                  uint32_t frame_id,
+                                                  uint32_t timeout_us,
+                                                  uint8_t max_retries,
+                                                  uint8_t *retries)
+{
     uint8_t attempts = 0;
-    enc28j60_tx_status result;
+    enc28j60_tx_status result = tx_wait(eth, timeout_us);
 
-    while (true) {
-        enc28j60_frame_tx_blk(eth, frame_id);
-        result = tx_wait(eth, timeout_us);
-        if (result != ENC28J60_TX_ABORTED || attempts >= max_retries) {
-            break;
-        }
-
+    while (result == ENC28J60_TX_ABORTED && attempts < max_retries) {
         // The MAC retries a frame after an ordinary collision by itself, but
         // not after a late one: that is for us to do (silicon errata, issue
         // 13). An abort for any other reason is final.
@@ -1009,6 +1014,8 @@ enc28j60_tx_status enc28j60_frame_send_blk(enc28j60 *eth, uint32_t frame_id,
             break;
         }
         ++attempts;
+        enc28j60_frame_tx_blk(eth, frame_id);
+        result = tx_wait(eth, timeout_us);
     }
 
     enc28j60_frame_tx_confirm(eth, frame_id);
@@ -1016,6 +1023,13 @@ enc28j60_tx_status enc28j60_frame_send_blk(enc28j60 *eth, uint32_t frame_id,
         *retries = attempts;
     }
     return result;
+}
+
+bool enc28j60_frame_tx_ended_blk(enc28j60 *eth)
+{
+    // Both flags stay set until they are cleared: by the start of the next
+    // frame, by a wait that gives up, or by a caller that acknowledges them
+    return (reg_read_e_blk(eth, EIR) & (TXIF | TXERIF)) != 0;
 }
 
 void enc28j60_set_mac_blk(enc28j60 *eth, const uint8_t *mac)

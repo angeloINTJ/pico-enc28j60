@@ -234,6 +234,22 @@ enc28j60_tx_status enc28j60_frame_send_blk(enc28j60 *eth, uint32_t frame_id,
                                            uint8_t max_retries,
                                            uint8_t *retries);
 
+//! The second half of enc28j60_frame_send_blk(), for a frame that
+//! enc28j60_frame_tx_blk() started: wait for its outcome, send it again after a
+//! late collision, and release its buffer space. Other frames may be uploaded
+//! while it is on the wire, which is the point of starting a frame and waiting
+//! for it apart; no other transmission may start before this returns.
+enc28j60_tx_status enc28j60_frame_send_finish_blk(enc28j60 *eth,
+                                                  uint32_t frame_id,
+                                                  uint32_t timeout_us,
+                                                  uint8_t max_retries,
+                                                  uint8_t *retries);
+
+//! Has the transmission started last ended, sent or given up on? One read of
+//! EIR (TXIF or TXERIF), no wait. A caller that acknowledges TXIF or TXERIF
+//! itself cannot use it.
+bool enc28j60_frame_tx_ended_blk(enc28j60 *eth);
+
 //! Read the transmit status vector of the frame that was sent last, seven
 //! bytes laid out as in the data sheet (table 7-3), least significant byte
 //! first. Valid until the next frame is uploaded over it.

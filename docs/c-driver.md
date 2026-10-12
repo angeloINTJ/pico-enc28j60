@@ -103,7 +103,12 @@ data is passed to both functions when they are called.
    was reset by a glitch of its supply has the receiver off.
  * `enc28j60_frame_send_blk()` sends a frame that was uploaded, waits for it, and sends it
    again after a late collision (silicon errata, issue 13); `enc28j60_tx_status_blk()` reads
-   the transmit status vector of the last frame.
+   the transmit status vector of the last frame. It is `enc28j60_frame_tx_blk()` followed by
+   `enc28j60_frame_send_finish_blk()`: in between, the next frame can be uploaded while this
+   one is on the wire, which is how the lwIP interface sends. No other frame may start
+   before the finish returns, because the start of a frame resets the transmit logic.
+   `enc28j60_frame_tx_ended_blk()` tells, with one read, whether the frame on the wire has
+   ended.
  * `enc28j60_set_mac_blk()`, `enc28j60_rx_reset_blk()`, `enc28j60_irq_status_blk()` and
    `enc28j60_irq_enable_blk()`.
  * `enc28j60_irq_is_tx_err()` and the status `ENC28J60_ERR_DMA`, for the asynchronous
