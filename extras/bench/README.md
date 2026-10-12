@@ -196,7 +196,7 @@ reason. Without `--irq` and `--web-mac` the gate is the two polled suites of `be
 | `--web-mac MAC` | The MAC address of the web example (below). With it the web suites run |
 | `--soak SECONDS` | The length of the soak in each web suite. Default: 240 |
 | `--spi-hz HZ` | The SPI clock of `bench.py` and `benchlwip.py`. `--spi-assert-mhz` is set to the same clock, so that the `spi` test asks for clean transfers at it |
-| `--port PORT` | The serial port of the Pico. Default: the first `/dev/serial/by-id/*Pico*`. Uploads use the device node that it points to, which is what the uploader of the core needs |
+| `--port PORT` | The serial port of the Pico. Default: the only `/dev/serial/by-id/*Pico*`; with more than one Pico connected the gate stops and asks for it, so that no other board gets flashed (`bench.py` and `benchlwip.py` do the same). Uploads use the device node that it points to, which is what the uploader of the core needs |
 | `--out DIR` | Where the logs and the summary go. Default: `$TMPDIR/picoenc-gate`, or `/tmp/picoenc-gate` |
 | `--fqbn FQBN` | The board. Default: `rp2040:rp2040:rpipico` |
 
@@ -231,10 +231,12 @@ board by it: five seconds after an upload it pings the 254 addresses of the /24 
 `begin()` and no address, so the core makes the MAC address from the unique ID of the board:
 bytes 2 to 7 of the ID, the first one made unicast and locally administered, and 2 added to
 the fourth (the number that lwIP gives the interface; core 6.3.0, `LwipIntfDev.h`). The ID is
-the 16 hexadecimal digits in the name of the device in `/dev/serial/by-id`:
+the 16 hexadecimal digits in the name of the device in `/dev/serial/by-id` (set `port` to the
+Pico wired to the ENC28J60):
 
 ```
-id=$(ls /dev/serial/by-id/*Pico* | head -n 1 | grep -o '[0-9A-Fa-f]\{16\}' | tr A-F a-f)
+port=$(ls /dev/serial/by-id/*Pico*)   # one Pico connected; otherwise name it
+id=$(basename "$port" | grep -o '[0-9A-Fa-f]\{16\}' | tr A-F a-f)
 printf '%02x:%s:%s:%02x:%s:%s\n' $(( (0x${id:4:2} & 0xFE) | 2 )) "${id:6:2}" "${id:8:2}" $(( (0x${id:10:2} + 2) & 255 )) "${id:12:2}" "${id:14:2}"
 ```
 

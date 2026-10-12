@@ -38,7 +38,8 @@ Options:
   --soak SECONDS   the length of the soak in each web suite (default: 240)
   --spi-hz HZ      run bench.py and benchlwip.py at this SPI clock. The web example has no such
                    option, so the web suites do not run
-  --port PORT      the serial port of the Pico (default: the first /dev/serial/by-id/*Pico*)
+  --port PORT      the serial port of the Pico (default: the only /dev/serial/by-id/*Pico*; with
+                   more than one Pico connected the gate asks for it)
   --out DIR        where the logs and summary.txt go (default: $default_out)
   --fqbn FQBN      the board (default: rp2040:rp2040:rpipico)
   -h, --help       this text
@@ -121,6 +122,8 @@ if [[ -z $port ]]; then
     ports=(/dev/serial/by-id/*Pico*)
     shopt -u nullglob
     ((${#ports[@]} > 0)) || die "no Pico found in /dev/serial/by-id: plug it in, or pass --port"
+    # The suites flash the board: with several Picos connected, picking one would be a guess
+    ((${#ports[@]} == 1)) || die "${#ports[@]} Picos are connected (${ports[*]##*/}): pass --port with the one wired to the ENC28J60, so that no other board is flashed"
     port=${ports[0]}
 fi
 

@@ -159,6 +159,10 @@ def find_port(explicit):
     cands = sorted(glob.glob("/dev/serial/by-id/*Pico*"))
     if not cands:
         sys.exit("no Pico serial port found; pass --port")
+    # --flash writes over whatever runs on that board: with several Picos connected, picking one would be a guess
+    if len(cands) > 1:
+        sys.exit("%d Picos are connected (%s): pass --port with the one wired to the ENC28J60, so that no other "
+                 "board is flashed" % (len(cands), ", ".join(os.path.basename(c) for c in cands)))
     return cands[0]
 
 
