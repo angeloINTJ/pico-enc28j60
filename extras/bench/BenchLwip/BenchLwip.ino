@@ -186,7 +186,7 @@ static void serveTcp()
             continue;
         }
         if (n > 0) {
-            uint8_t buf[512];
+            static uint8_t buf[512];  // not on the stack: it has 2 KB in the core, and lwIP runs on top of it
             if (n > (int)sizeof buf) {
                 n = sizeof buf;
             }
@@ -350,7 +350,7 @@ static void cmdClient(char* args)
     // Download: the host sends <down> bytes of a known pattern
     t0 = millis();
     uint32_t got = 0, bad = 0;
-    uint8_t buf[512];
+    static uint8_t buf[512];  // see serveTcp()
     uint32_t idle = millis();
     while (got < down && millis() - idle < 5000) {
         int n = cl.available();
