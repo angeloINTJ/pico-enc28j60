@@ -255,11 +255,11 @@ stack serve a frame the moment it arrives, see below.
 
 Same API as the other wired Ethernet interfaces of the core (`begin()`, `config()`,
 `connected()`, `localIP()`, `linkStatus()`, ...), plus `end()`, `lastError()`,
-`setPollPeriod(ms)` and `driverStats()`. `begin()` returns `false` when no chip answers;
-without a MAC address of your own, the core makes a locally administered one from the
-board. Do not call the raw driver methods while it runs. Tested on a Pico (RP2040)
-only. When the cable is unplugged and plugged back, lwIP is told and asks the DHCP
-server again.
+`setPollPeriod(ms)`, `driverStats()` and `droppedNoBuffer()` (how many frames lwIP had
+no buffer for). `begin()` returns `false` when no chip answers; without a MAC address
+of your own, the core makes a locally administered one from the board. Do not call the
+raw driver methods while it runs. Tested on a Pico (RP2040) only. When the cable is
+unplugged and plugged back, lwIP is told and asks the DHCP server again.
 
 Every frame is handed to lwIP in buffers from its pool. The receive loop of the core
 puts each one in a block of the heap of lwIP, which has 16 KB in the core, and a few

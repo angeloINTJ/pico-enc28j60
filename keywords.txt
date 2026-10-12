@@ -39,6 +39,8 @@ getDriverHandle	KEYWORD2
 stats	KEYWORD2
 driverStats	KEYWORD2
 setPollPeriod	KEYWORD2
+checkChip	KEYWORD2
+droppedNoBuffer	KEYWORD2
 #######################################
 # Constants (LITERAL1)
 #######################################
