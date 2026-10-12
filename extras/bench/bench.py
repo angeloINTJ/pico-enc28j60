@@ -17,10 +17,13 @@ top of that, and three more (irqidle, irqedge, irqlink) check the interrupt itse
 Besides the traffic, the tests check what the driver does when things go wrong: a
 begin() with no chip, with settings that make no sense and with no room in the PIO,
 other users of the PIO, a state machine that stops, begin() after end(), and the
-status of a transmitted frame.
+status of a transmitted frame. Others go through the rest of the public API: the
+functions that only look and discardFrame() on frames that wait in the buffer,
+hasLinkChange(), setMACAddress() and the interrupt callback.
 
 Needs pyserial, arduino-cli (only with --flash) and a free IPv4 address on the
-LAN for the board. No root required.
+LAN for the board, and a second one for the setmac test (--alt-ip, by default the
+address of the board plus two). No root required.
 """
 import argparse
 import glob
@@ -44,7 +47,8 @@ PICO_MAC = "02:50:49:43:4f:01"
 PORT_RX, PORT_ECHO, PORT_TX, PEER_PORT = 9999, 9997, 9998, 9998
 SIZES = [10, 18, 100, 400, 800, 1200, 1472]  # UDP payload sizes
 ALL_TESTS = ["init", "cfgerr", "pioful", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong",
-             "txbburst", "soak", "rxflood", "txstat", "pioshare", "stall", "lifecycle", "txmix", "lostchip"]
+             "txbburst", "soak", "rxflood", "discard", "callback", "linkflag", "setmac", "txstat", "pioshare",
+             "stall", "lifecycle", "txmix", "lostchip"]
 IRQ_TESTS = ["irqidle", "irqedge", "irqlink"]  # only with --irq
 results = []
 
@@ -228,7 +232,7 @@ def t_rx(p, host_ip, count=200, interval=0.01):
     time.sleep(0.5)
     s = stats(p)
     good = (num(s, "bench") == count and num(s, "dup") == 0 and num(s, "stale") == 0 and
-            num(s, "gap") == 0 and num(s, "bad") == 0)
+            num(s, "gap") == 0 and num(s, "bad") == 0 and num(s, "peekbad") == 0)
     record("rx", good,
            "sent %d broadcast frames; board: ok=%s dup=%s stale=%s gap=%s bad=%s; other LAN frames seen=%s; "
            "bytes after IP datagram: 0B x%s, 4B(FCS) x%s, other x%s" %
@@ -268,7 +272,8 @@ def t_soak(p, host_ip, count=5000):
     t0 = time.time()
     s = stream_rx(p, host_ip, count, 0.002, [18, 100, 400, 800, 1200, 1472])
     good = (num(s, "bench") == count and num(s, "dup") == 0 and num(s, "stale") == 0 and
-            num(s, "gap") == 0 and num(s, "bad") == 0 and num(s, "rxz") == 0 and num(s, "runt") == 0)
+            num(s, "gap") == 0 and num(s, "bad") == 0 and num(s, "rxz") == 0 and num(s, "runt") == 0 and
+            num(s, "peekbad") == 0)
     record("soak", good, "%d frames in %.0f s: ok=%s dup=%s stale=%s gap=%s bad=%s runt=%s recoveries=%s; "
            "ambient frames=%d" % (count, time.time() - t0, s["bench"], s["dup"], s["stale"], s["gap"], s["bad"],
                                   s["runt"], s["rxz"], num(s, "frames") - num(s, "bench")))
@@ -281,17 +286,18 @@ def t_rxflood(p, host_ip, count=3000):
     # Big frames, no pacing: they reach the board back to back at the 10 Mbit/s of
     # its port, faster than the 3.5 MHz SPI link can drain the 4 KB receive buffer.
     s = stream_rx(p, host_ip, count, 0, [1472, 1200, 800], pace=False)
-    intact = num(s, "dup") == 0 and num(s, "stale") == 0 and num(s, "bad") == 0
+    intact = num(s, "dup") == 0 and num(s, "stale") == 0 and num(s, "bad") == 0 and num(s, "peekbad") == 0
     got, lost = num(s, "bench"), count - num(s, "bench")
-    ok1 = intact and got > 0 and lost > 0  # lost == 0 would mean the test did not overload anything
+    # lost == 0 would mean the test did not overload anything; hasRXError() has to have said so
+    ok1 = intact and got > 0 and lost > 0 and num(s, "peekrxe") > 0
     wait_quiet(p)  # frames queued in the switch keep arriving for a while after the flood
     p.cmd("RESET", "OK")
     s2 = stream_rx(p, host_ip, 50, 0.01, [100])
     ok2 = (num(s2, "bench") == 50 and num(s2, "gap") == 0 and num(s2, "bad") == 0 and
            num(s2, "dup") == 0 and num(s2, "stale") == 0)
-    record("rxflood", ok1 and ok2, "flood of %d frames: %d received intact, %d lost to overflow, "
-           "dup=%s stale=%s bad=%s, recoveries=%s; clean stream afterwards: %s/50" %
-           (count, got, lost, s["dup"], s["stale"], s["bad"], s["rxz"], s2["bench"]))
+    record("rxflood", ok1 and ok2, "flood of %d frames: %d received intact, %d lost to overflow (hasRXError() said so %s "
+           "times), dup=%s stale=%s bad=%s, recoveries=%s; clean stream afterwards: %s/50" %
+           (count, got, lost, s["peekrxe"], s["dup"], s["stale"], s["bad"], s["rxz"], s2["bench"]))
 
 
 def t_echo(p, host_ip, pico_ip, count=200):
@@ -425,6 +431,116 @@ def wait_link(p, timeout=25):
     return False
 
 
+def t_discard(p, host_ip, irq, count=9):
+    """Frames wait in the receive buffer while the board does not serve the chip. hasPacket(), available() and
+    peekInterruptFlags() have to say so, discardFrame() has to drop one frame unseen without disturbing the
+    next ones, and the receiver has to be in step afterwards."""
+    p.cmd("RESET", "OK")
+    p.cmd("HOLD 1", "OK")
+    sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sk.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sk.bind((host_ip, 0))
+    for seq in range(count):
+        sk.sendto(make_payload(seq, 100), ("255.255.255.255", PORT_RX))
+        time.sleep(0.03)
+    sk.close()
+    time.sleep(0.3)
+    before = kv(p.cmd("PEEK", "PEEK"))
+    line_before = num(stats(p), "int")
+    drained = kv(p.cmd("DRAIN", "DRAINDONE", 10))
+    after = kv(p.cmd("PEEK", "PEEK"))
+    p.cmd("HOLD 0", "OK")
+    time.sleep(0.5)
+    s = stats(p)
+    total = num(drained, "total")
+    expect_dropped = sum(1 for i in range(total) if i % 3 == 1)
+    dropped = num(drained, "dropped")
+    p.cmd("RESET", "OK")
+    s2 = stream_rx(p, host_ip, 50, 0.01, [100])  # the pointers must still be in step
+    ok = (num(before, "pkt") == 1 and num(before, "avail") >= count and num(before, "flags") & 0x40 and
+          (not irq or line_before == 0) and
+          total >= count and dropped == expect_dropped and dropped >= 3 and num(drained, "left") == 0 and
+          num(after, "pkt") == 0 and num(after, "avail") == 0 and not num(after, "flags") & 0x40 and
+          num(s, "dis") == dropped and num(s, "bad") == 0 and num(s, "dup") == 0 and num(s, "stale") == 0 and
+          num(s, "rxz") == 0 and count - dropped <= num(s, "bench") <= count and num(s, "peekbad") == 0 and
+          num(s2, "bench") == 50 and num(s2, "gap") == 0 and num(s2, "bad") == 0)
+    record("discard", ok,
+           "%d frames held in the buffer: hasPacket()=%s, available()=%s, flags 0x%02X%s; drained %d frames, "
+           "discardFrame() dropped %d unseen (every third); %s of the %d frames sent were received intact "
+           "(bad=%s dup=%s stale=%s); afterwards hasPacket()=%s, available()=%s; clean stream %s/50" %
+           (count, before["pkt"], before["avail"], num(before, "flags"),
+            ", INT line %s" % ("low" if line_before == 0 else "HIGH") if irq else "", total, dropped, s["bench"],
+            count, s["bad"], s["dup"], s["stale"], after["pkt"], after["avail"], s2["bench"]))
+
+
+def t_callback(p, host_ip, irq, count=50, gap=0.05):
+    """The interrupt callback of setInterruptCallback(): called from the interrupt handler when the INT pin is
+    wired, by poll() when it is not. It only raises a flag; the main loop then serves the chip."""
+    p.cmd("CBMODE 1", "OK")
+    p.cmd("RESET", "OK")
+    sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sk.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sk.bind((host_ip, 0))
+    for seq in range(count):
+        sk.sendto(make_payload(seq, 100), ("255.255.255.255", PORT_RX))
+        time.sleep(gap)
+    sk.close()
+    time.sleep(0.5)
+    s = stats(p)
+    p.cmd("CBMODE 0", "OK")
+    cb, edges, svc = num(s, "cb"), num(s, "irq"), num(s, "svc")
+    # with the wire the callback is the interrupt handler: once per falling edge. Without it, once per pass of the
+    # main loop that found something to do, and each such pass serves the chip.
+    ties = abs(cb - edges) <= 1 if irq else abs(cb - svc) <= 1
+    ok = (num(s, "bench") == count and num(s, "gap") == 0 and num(s, "bad") == 0 and num(s, "dup") == 0 and
+          cb >= count * 0.9 and ties and num(s, "peekbad") == 0)
+    record("callback", ok, "%d frames %d ms apart, served only when the callback asked: received %s; callback called "
+           "%d times, %s; %s service passes" %
+           (count, gap * 1000, s["bench"], cb, "%d edges on INT" % edges if irq else "once per poll() that found work",
+            svc))
+
+
+def t_linkflag(p, ping_ip):
+    """hasLinkChange(): the PHY is powered down and up, and the flag has to be there each time, and go away when
+    it is acknowledged. Not tied to the INT pin: it works by looking at the flags."""
+    t = kv(p.cmd("LINKEVENT", "LINKEVENT", 40))
+    link = wait_link(p)
+    replies = ping_replies(ping_ip) if link else 0
+    keys = ("clean", "down_seen", "link_down", "down_cleared", "up_seen", "link_up", "up_cleared")
+    ok = all(num(t, k) == 1 for k in keys) and link and replies == 5
+    record("linkflag", ok, "link change flag: %s; link %s, ping after the cycle %d/5" %
+           (", ".join("%s=%s" % (k, t.get(k)) for k in keys), "up" if link else "DOWN", replies))
+
+
+def t_setmac(p, ip, alt_ip):
+    """setMACAddress() while the chip works: the chip's registers hold the new address, the board answers ARP with
+    it and accepts frames sent to it, it survives the chip being reset, and the old address comes back."""
+    alt_mac = "02:50:49:43:4f:02"
+    notes, ok = [], True
+
+    r = kv(p.cmd("SETMAC %s %s" % (alt_mac, alt_ip), "SETMAC"))
+    replies = ping_replies(alt_ip)
+    neigh = subprocess.run(["ip", "neigh", "show", alt_ip], capture_output=True, text=True).stdout.strip()
+    good = num(r, "get") == 1 and num(r, "hw") == 1 and replies == 5 and alt_mac in neigh.lower()
+    ok = ok and good
+    notes.append("new address: registers %s, ping %d/5, host ARP entry %s" %
+                 ("ok" if num(r, "hw") else "WRONG (%s)" % r.get("mac"), replies, neigh or "none"))
+
+    t = kv(p.cmd("LOSTCHIP", "LOSTCHIP", 20))
+    link = wait_link(p)
+    replies = ping_replies(alt_ip) if link else 0
+    good = num(t, "fixed") == 1 and link and replies == 5
+    ok = ok and good
+    notes.append("after the chip was reset: ping %d/5" % replies)
+
+    r = kv(p.cmd("SETMAC %s %s" % (PICO_MAC, ip), "SETMAC"))
+    replies = ping_replies(ip)
+    good = num(r, "get") == 1 and num(r, "hw") == 1 and replies == 5
+    ok = ok and good
+    notes.append("original address back: ping %d/5" % replies)
+    record("setmac", ok, "; ".join(notes))
+
+
 def t_txstat(p):
     """The transmit status vector of frames sent on purpose: sizes, flags and no errors."""
     ok, notes = True, []
@@ -452,14 +568,16 @@ def t_pioshare(p, ip):
 
 def t_stall(p, ip):
     """The state machine of the driver is stopped: the call that finds out must return, and the driver must come back."""
+    before = stats(p)  # earlier tests may have recovered the chip already (setmac does)
     t = kv(p.cmd("STALL", "STALLDONE", 20))
+    io, rec = num(t, "io") - num(before, "io"), num(t, "rec") - num(before, "rec")
     link = wait_link(p)
     replies = ping_replies(ip) if link else 0
-    record("stall", num(t, "first_us") < 100000 and num(t, "first") == 0xFF and num(t, "second") == 6 and num(t, "io") == 1 and
-           num(t, "rec") == 1 and link and replies == 5,
+    record("stall", num(t, "first_us") < 100000 and num(t, "first") == 0xFF and num(t, "second") == 6 and io == 1 and
+           rec == 1 and link and replies == 5,
            "state machine stopped: the first call came back after %.1f ms with the failure value, the next one "
-           "brought the chip back in %s ms (io errors %s, recoveries %s); link %s, ping %d/5" %
-           (num(t, "first_us") / 1000, t["second_ms"], t["io"], t["rec"], "up" if link else "DOWN", replies))
+           "brought the chip back in %s ms (io errors +%d, recoveries +%d); link %s, ping %d/5" %
+           (num(t, "first_us") / 1000, t["second_ms"], io, rec, "up" if link else "DOWN", replies))
 
 
 def t_lifecycle(p, ip):
@@ -605,6 +723,7 @@ def main():
     ap.add_argument("--fqbn", default="rp2040:rp2040:rpipico")
     ap.add_argument("--flash", action="store_true", help="compile and upload BenchTest first")
     ap.add_argument("--irq", type=int, metavar="GPIO", help="the board is the interrupt build, INT wired to this GPIO")
+    ap.add_argument("--alt-ip", help="a second free IPv4 address, for the setmac test (default: --ip plus two)")
     ap.add_argument("--tests", help="comma separated; default: all")
     args = ap.parse_args()
     if args.tests is None:
@@ -614,6 +733,8 @@ def main():
     if args.flash:
         flash(port, args.fqbn, args.irq)
     host_ip = local_ip_for(args.ip)
+    head, _, last = args.ip.rpartition(".")
+    alt_ip = args.alt_ip or "%s.%d" % (head, int(last) + 2)
     print("board %s on %s, PC %s, serial %s\n" % (args.ip, "LAN", host_ip, port))
 
     p = Pico(port)
@@ -642,6 +763,14 @@ def main():
             t_soak(p, host_ip)
         if "rxflood" in wanted:
             t_rxflood(p, host_ip)
+        if "discard" in wanted:
+            t_discard(p, host_ip, args.irq is not None)
+        if "callback" in wanted:
+            t_callback(p, host_ip, args.irq is not None)
+        if "linkflag" in wanted:
+            t_linkflag(p, args.ip)
+        if "setmac" in wanted:
+            t_setmac(p, args.ip, alt_ip)
         if "txb" in wanted:
             t_txb(p, host_ip, "txb", 100, 300, 3000)
         if "txblong" in wanted:

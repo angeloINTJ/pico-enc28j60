@@ -27,6 +27,11 @@
  * the other users of the PIO, a state machine that stops, begin() after end(),
  * the status of a transmitted frame, sending with the longest receive buffer, and
  * a chip that was reset behind its back.
+ *
+ * The rest of the public API is covered by HOLD, PEEK and DRAIN (the functions that
+ * only look, and discardFrame(), on frames that wait in the receive buffer),
+ * LINKEVENT (hasLinkChange()), SETMAC (setMACAddress()) and CBMODE (the interrupt
+ * callback, and poll() when the INT pin is not wired).
  */
 #include <PicoENC28J60.h>
 #include <SerialPIO.h>
@@ -48,7 +53,7 @@ static const uint16_t PORT_TX = 9998;    // Pico -> host broadcast stream (TXB c
 static const uint16_t PORT_ECHO = 9997;  // host -> Pico unicast, echoed back; sender becomes the TX peer
 static const uint16_t HDR_LEN = 10;      // "PBNC" + seq(4) + payload length(2)
 
-static const uint8_t MAC[6] = {0x02, 0x50, 0x49, 0x43, 0x4F, 0x01};
+static uint8_t MAC[6] = {0x02, 0x50, 0x49, 0x43, 0x4F, 0x01};  // the one in use; SETMAC changes it
 static uint8_t myIp[4];  // set with the IP command; 0.0.0.0 = unset
 
 static ENC28J60Config makeConfig()
@@ -99,9 +104,18 @@ struct Stats {
     uint32_t tx, txf;
     uint32_t irqSvc, irqLink, irqRxErr;  // interrupt build: service passes, link and overflow events
     uint32_t irqFlags;                   // OR of every flag byte read
+    uint32_t discarded;                  // frames dropped unseen with discardFrame()
+    uint32_t peekBad;                    // a function that only looks said something the flags then denied
+    uint32_t peekPkt, peekLnk, peekRxe;  // times hasPacket(), hasLinkChange() and hasRXError() said yes
 } st;
+static volatile uint32_t cbCount;  // calls of the interrupt callback
+static volatile bool cbFlag;       // set by it, taken by the main loop in CBMODE
+static bool cbMode;                // CBMODE 1: serve the chip when the callback asks, not when interruptPending() does
+static bool hold;                  // HOLD 1: leave the frames in the receive buffer
 static uint32_t expectedSeq;
 static uint32_t irqBase;  // interrupt count at the last RESET
+
+static const uint16_t PHY_PWRSV = 0x0800;  // PHCON1.PPWRSV
 
 #ifdef BENCH_IRQ_PIN
 // LINK command: power the PHY down and up again and watch the interrupt report it
@@ -109,7 +123,6 @@ static struct {
     uint8_t phase;  // 0 idle, 1 PHY powered down, 2 powered up again and waiting for the link
     uint32_t t0, t1, downMs, upMs;
 } lk;
-static const uint16_t PHY_PWRSV = 0x0800;  // PHCON1.PPWRSV
 #endif
 
 struct Peer {
@@ -422,7 +435,18 @@ static void linkCycleStep()
 static void serviceInterrupt()
 {
     st.irqSvc++;
+    // The functions that only look must not say what the flags, read right after, deny: nothing clears a flag in
+    // between. A flag may well appear in between, so the other way round proves nothing.
+    uint8_t peek = eth.peekInterruptFlags();
+    bool pkt = eth.hasPacket(), lnk = eth.hasLinkChange(), rxe = eth.hasRXError();
     uint8_t flags = eth.getInterruptFlags();
+    if ((peek & ~flags) || (pkt && !(flags & PicoENC28J60::INT_PACKET_RX)) ||
+        (lnk && !(flags & PicoENC28J60::INT_LINK_CHANGE)) || (rxe && !(flags & PicoENC28J60::INT_RX_ERROR))) {
+        st.peekBad++;
+    }
+    st.peekPkt += pkt;
+    st.peekLnk += lnk;
+    st.peekRxe += rxe;
     st.irqFlags |= flags;
     if (flags & PicoENC28J60::INT_RX_ERROR) st.irqRxErr++;
     if (flags & PicoENC28J60::INT_LINK_CHANGE) {
@@ -479,7 +503,8 @@ static void printStats()
     const PicoENC28J60::Stats& e = eth.stats();
     Serial.printf("STAT frames=%lu bench=%lu dup=%lu stale=%lu gap=%lu bad=%lu arp=%lu icmp=%lu echo=%lu "
                   "other=%lu runt=%lu x0=%lu x4=%lu xo=%lu rxz=%lu tx=%lu txf=%lu pend=%u rxrst=%lu rxdrop=%lu "
-                  "irq=%lu svc=%lu lnk=%lu rxe=%lu irqfl=0x%02X int=%d io=%lu rec=%lu txab=%lu txre=%lu\n",
+                  "irq=%lu svc=%lu lnk=%lu rxe=%lu irqfl=0x%02X int=%d io=%lu rec=%lu txab=%lu txre=%lu "
+                  "dis=%lu peekbad=%lu peekpkt=%lu peeklnk=%lu peekrxe=%lu cb=%lu\n",
                   (unsigned long)st.frames, (unsigned long)st.bench, (unsigned long)st.dup,
                   (unsigned long)st.stale, (unsigned long)st.gap, (unsigned long)st.bad,
                   (unsigned long)st.arp, (unsigned long)st.icmp, (unsigned long)st.echo,
@@ -490,7 +515,9 @@ static void printStats()
                   (unsigned long)(eth.interruptCount() - irqBase), (unsigned long)st.irqSvc, (unsigned long)st.irqLink,
                   (unsigned long)st.irqRxErr, (unsigned)st.irqFlags,
                   irqPin() >= 0 ? digitalRead(irqPin()) : -1, (unsigned long)e.io_errors,
-                  (unsigned long)e.recoveries, (unsigned long)e.tx_aborts, (unsigned long)e.tx_retries);
+                  (unsigned long)e.recoveries, (unsigned long)e.tx_aborts, (unsigned long)e.tx_retries,
+                  (unsigned long)st.discarded, (unsigned long)st.peekBad, (unsigned long)st.peekPkt,
+                  (unsigned long)st.peekLnk, (unsigned long)st.peekRxe, (unsigned long)cbCount);
 }
 
 // TX  <count> <payload length> <gap in microseconds>: unicast stream to the last echo peer.
@@ -640,6 +667,94 @@ static void cmdLostChip()
                   eth.getRevision());
 }
 
+// The functions that only look, and discardFrame(), on frames that wait in the receive buffer.
+//   HOLD 1   leave the frames where they are: loop() stops serving the chip. HOLD 0 serves it again.
+//   PEEK     what hasPacket(), available() and peekInterruptFlags() say about the buffer right now
+//   DRAIN    take every frame that waits, dropping every third one unseen with discardFrame()
+static void cmdPeek()
+{
+    bool pkt = eth.hasPacket();
+    uint8_t avail = eth.available();
+    uint8_t flags = eth.peekInterruptFlags();
+    Serial.printf("PEEK pkt=%d avail=%u flags=0x%02X\n", pkt, avail, flags);
+}
+
+static void cmdDrain()
+{
+    uint32_t total = 0, dropped = 0;
+    while (eth.available() && total < 200) {
+        if (total % 3 == 1) {
+            eth.discardFrame();
+            dropped++;
+        } else {
+            uint16_t len = eth.receiveFrame(rxbuf, sizeof(rxbuf));
+            if (len) handleFrame(rxbuf, len);
+            else st.rxz++;
+        }
+        total++;
+    }
+    st.discarded += dropped;
+    Serial.printf("DRAINDONE total=%lu dropped=%lu left=%u\n", (unsigned long)total, (unsigned long)dropped,
+                  eth.available());
+}
+
+// LINKEVENT: power the PHY down and up again, and watch hasLinkChange() report each change and
+// acknowledgeInterrupts(INT_LINK_CHANGE) clear it. Works with or without the INT pin: it only looks at the flag.
+static void cmdLinkEvent()
+{
+    enc28j60* h = driverHandle();
+    eth.acknowledgeInterrupts(PicoENC28J60::INT_LINK_CHANGE);  // start from a clean slate
+    bool clean = !eth.hasLinkChange();
+
+    reg_bits_clear_blk(h, ECON1, RXEN);  // stop the receiver first, as the datasheet asks before powering down
+    delay(2);
+    reg_write_p_blk(h, PHCON1, reg_read_p_blk(h, PHCON1) | PHY_PWRSV);
+    bool downSeen = false;
+    for (uint32_t t0 = millis(); !downSeen && millis() - t0 < 1500; delay(5)) downSeen = eth.hasLinkChange();
+    bool linkDown = !eth.linkStatus();
+    eth.acknowledgeInterrupts(PicoENC28J60::INT_LINK_CHANGE);
+    bool downCleared = !eth.hasLinkChange();
+
+    reg_write_p_blk(h, PHCON1, reg_read_p_blk(h, PHCON1) & ~PHY_PWRSV);
+    delay(2);  // the PHY needs a moment before it takes more commands
+    reg_bits_set_blk(h, ECON1, RXEN);
+    bool upSeen = false;
+    for (uint32_t t0 = millis(); !upSeen && millis() - t0 < 15000; delay(20)) upSeen = eth.hasLinkChange();
+    bool linkUp = eth.linkStatus();
+    eth.acknowledgeInterrupts(PicoENC28J60::INT_LINK_CHANGE);
+    bool upCleared = !eth.hasLinkChange();
+    Serial.printf("LINKEVENT clean=%d down_seen=%d link_down=%d down_cleared=%d up_seen=%d link_up=%d up_cleared=%d\n",
+                  clean, downSeen, linkDown, downCleared, upSeen, linkUp, upCleared);
+}
+
+// SETMAC <aa:bb:cc:dd:ee:ff> <a.b.c.d>: setMACAddress() while the chip works, and answer for that IP address from
+// now on. The chip's own registers are read back, and getMACAddress() has to agree.
+static void cmdSetMac(const char* args)
+{
+    unsigned m[6], a, b, c, d;
+    if (sscanf(args, "%x:%x:%x:%x:%x:%x %u.%u.%u.%u", &m[0], &m[1], &m[2], &m[3], &m[4], &m[5], &a, &b, &c, &d) != 10) {
+        Serial.println("SETMACERR syntax");
+        return;
+    }
+    uint8_t mac[6];
+    for (int i = 0; i < 6; i++) mac[i] = (uint8_t)m[i];
+    memcpy(MAC, mac, 6);
+    myIp[0] = a;
+    myIp[1] = b;
+    myIp[2] = c;
+    myIp[3] = d;
+    eth.setMACAddress(mac);
+
+    uint8_t back[6];
+    eth.getMACAddress(back);
+    enc28j60* h = driverHandle();
+    bank_set_blk(h, 3);
+    uint8_t hw[6] = {reg_read_m_blk(h, MAADR1), reg_read_m_blk(h, MAADR2), reg_read_m_blk(h, MAADR3),
+                     reg_read_m_blk(h, MAADR4), reg_read_m_blk(h, MAADR5), reg_read_m_blk(h, MAADR6)};
+    Serial.printf("SETMAC get=%d hw=%d mac=%02x:%02x:%02x:%02x:%02x:%02x\n", memcmp(back, mac, 6) == 0,
+                  memcmp(hw, mac, 6) == 0, hw[0], hw[1], hw[2], hw[3], hw[4], hw[5]);
+}
+
 // TSV <length> <broadcast 0/1>: send one frame through the C driver and read its transmit status vector.
 static void cmdTsv(uint16_t len, bool broadcast)
 {
@@ -686,6 +801,7 @@ static void handleCommand(char* line)
         printStats();
     } else if (strcmp(line, "RESET") == 0) {
         memset(&st, 0, sizeof(st));
+        cbCount = 0;
         irqBase = eth.interruptCount();
         expectedSeq = 0;
         peer.valid = false;
@@ -702,6 +818,21 @@ static void handleCommand(char* line)
         cmdLifecycle();
     } else if (strcmp(line, "LOSTCHIP") == 0) {
         cmdLostChip();
+    } else if (strncmp(line, "HOLD ", 5) == 0) {
+        hold = line[5] == '1';
+        Serial.println("OK");
+    } else if (strcmp(line, "PEEK") == 0) {
+        cmdPeek();
+    } else if (strcmp(line, "DRAIN") == 0) {
+        cmdDrain();
+    } else if (strncmp(line, "CBMODE ", 7) == 0) {
+        cbMode = line[7] == '1';
+        cbFlag = true;  // serve the chip once, whatever raised the line before the callback was the way in
+        Serial.println("OK");
+    } else if (strcmp(line, "LINKEVENT") == 0) {
+        cmdLinkEvent();
+    } else if (strncmp(line, "SETMAC ", 7) == 0) {
+        cmdSetMac(line + 7);
     } else if (sscanf(line, "TXMIX %u %lu", &a, &n) == 2) {
         cmdTxMix(a, n);
     } else if (sscanf(line, "TSV %u %u", &a, &b) == 2) {
@@ -827,6 +958,12 @@ void setup()
     probeConfigs();
     probePioFull();
 
+    // Called from the interrupt handler when the INT pin is wired, from poll() otherwise, and only
+    // counts and raises a flag: the chip is talked to from loop()
+    eth.setInterruptCallback([](void*) {
+        cbCount = cbCount + 1;
+        cbFlag = true;
+    });
     bool ok = eth.begin();
     Serial.println("READY bench=1");
     if (!ok) Serial.printf("INITFAIL %s\n", PicoENC28J60::errorString(eth.lastError()));
@@ -836,8 +973,18 @@ void loop()
 {
     pollSerial();
     // The chip is touched only when it asks for it: through its INT pin if it is
-    // wired, by looking at its flags otherwise
-    if (eth.isInitialized() && eth.interruptPending()) serviceInterrupt();
+    // wired, by looking at its flags otherwise. In CBMODE the callback asks.
+    if (eth.isInitialized() && !hold) {
+        if (cbMode) {
+            eth.poll();  // without the INT pin this calls the callback when interruptPending() says so
+            if (cbFlag) {
+                cbFlag = false;
+                serviceInterrupt();
+            }
+        } else if (eth.interruptPending()) {
+            serviceInterrupt();
+        }
+    }
 #ifdef BENCH_IRQ_PIN
     linkCycleStep();
 #endif
