@@ -162,22 +162,35 @@ struct enc28j60_cmd_buf {
     uint tx_channel;
     uint rx_channel;
     uint tx_ctrl_channel;
+
+    //! How many of the two DMA transfers of the execution in progress have not
+    //! finished yet: the chain that sends the commands, and the reception when
+    //! the commands read something
+    volatile uint8_t pending;
 };
 
-static void __time_critical_func(tx_irq_handler)(void *data)
+// An execution is over when both of its transfers are. The reception alone is
+// not enough: the commands that come after the last read (enc28j60_frame_rx()
+// moves the read pointers and decrements the packet counter after reading the
+// frame) are still being sent when the last byte comes in, and a new execution
+// started then would restart the chain under them. The end of the chain alone
+// is not enough either, since the bytes being read come in after the last
+// command went out. Both handlers run in the same interrupt, one at a time.
+static void __time_critical_func(transfer_done)(enc28j60 *eth)
 {
-    enc28j60 *eth = data;
-    if (!eth->cmd_buf->rx_bytes) {
+    if (eth->cmd_buf->pending > 0 && --eth->cmd_buf->pending == 0) {
         eth->cfg->notify.notify(eth->cfg->notify.data);
     }
 }
 
+static void __time_critical_func(tx_irq_handler)(void *data)
+{
+    transfer_done(data);
+}
+
 static void __time_critical_func(rx_irq_handler)(void *data)
 {
-    enc28j60 *eth = data;
-    if (eth->cmd_buf->rx_bytes) {
-        eth->cfg->notify.notify(eth->cfg->notify.data);
-    }
+    transfer_done(data);
 }
 
 void enc28j60_cmd_buf_init(enc28j60 *eth)
@@ -351,6 +364,10 @@ void enc28j60_cmd_buf_execute(enc28j60 *eth)
 {
     enc28j60_cmd_buf *b = eth->cmd_buf;
     enc28j60_config *cfg = eth->cfg;
+
+    // Set before any transfer starts, so that no interrupt can see the count
+    // of the previous execution
+    b->pending = b->rx_bytes ? 2 : 1;
 
     if (b->rx_bytes) {
         dma_channel_set_write_addr(b->rx_channel, b->rx_buf, false);
