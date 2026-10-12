@@ -32,7 +32,7 @@ locally from the root of the repository.
 | Check | Command |
 |-------|---------|
 | Library metadata and examples | `arduino-lint --library-manager false --compliance strict --project-type library "$PWD"` |
-| Formatting of the C and C++ sources | `clang-format-18 --dry-run --Werror src/*.c src/*.cpp src/PicoENC28J60.h src/PicoENC28J60lwIP.h src/enc28j60-cmd.h src/pico/*.h freertos/*.c freertos/pico/*.h` (use version 18: other versions format differently; `-i` instead of `--dry-run --Werror` fixes the files) |
+| Formatting of the C and C++ sources | `extras/tools/check-format.sh`, the command that the CI runs (it needs clang-format 18, because other versions format differently; `CLANG_FORMAT` names another binary, and `clang-format-18 -i` on the files it names fixes them) |
 | Links between the Markdown files | `python3 extras/tools/check-links.py` |
 | The PIO header | `extras/tools/regenerate-pio-header.sh` after any change to `src/enc28j60-spi.pio`; the CI checks that the program in `src/enc28j60-spi.pio.h` is the one pioasm makes of the `.pio` file |
 | The timing of the PIO program | `python3 extras/tools/pio-sim.py --check` simulates the assembled program at the fastest SPI clock the driver allows and fails unless the chip select times and the clock period of table 16-6 of the data sheet are met (`--spi-mhz` simulates another clock, and a `.pio` file as the last argument checks another program); without `--check` it prints the report |
