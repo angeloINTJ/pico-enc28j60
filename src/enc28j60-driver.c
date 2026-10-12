@@ -1002,6 +1002,29 @@ static uint16_t rx_read_pointer(const enc28j60 *eth, uint16_t next_packet)
     return next_packet == 0 ? eth->cfg->rx_size - 1 : next_packet - 1;
 }
 
+//! Queue the commands that hand the frame ending right before next_packet back
+//! to the chip, for the asynchronous functions: the same steps as at the end of
+//! enc28j60_frame_rx_blk(). The hardware pads every frame to an even length, so
+//! next_packet is always even, and writing it to ERXRDPT as it is would break
+//! the rule above on every frame.
+static void rx_release_encode(enc28j60 *eth, uint16_t next_packet)
+{
+    // Register bank 0
+    enc28j60_cmd_buf_encode_cmd(eth, BFC_CMD(ECON1, 0x3), NULL);
+
+    // RX read pointer; it frees the space up to the end of this frame
+    uint16_t rdpt = rx_read_pointer(eth, next_packet);
+    enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ERXRDPTL, rdpt), NULL);
+    enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ERXRDPTH, rdpt >> 8), NULL);
+
+    // RBM read pointer
+    enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ERDPTL, next_packet), NULL);
+    enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ERDPTH, next_packet >> 8), NULL);
+
+    // Decrement the packet counter
+    enc28j60_cmd_buf_encode_cmd(eth, BFS_CMD(ECON2, PKTDEC), NULL);
+}
+
 uint32_t enc28j60_frame_rx_info(enc28j60 *eth)
 {
     // Read the header - Section 7.2.2 of the datasheet
@@ -1052,20 +1075,7 @@ void enc28j60_frame_rx(enc28j60 *eth, uint32_t rx_info, void *buffer)
         remaining -= to_read;
     }
 
-    // Register bank 0
-    enc28j60_cmd_buf_encode_cmd(eth, BFC_CMD(ECON1, 0x3), NULL);
-
-    // RX read pointer
-    enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ERXRDPTL, next_packet), NULL);
-    enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ERXRDPTH, next_packet >> 8), NULL);
-
-    // RBM read pointer
-    enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ERDPTL, next_packet), NULL);
-    enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ERDPTH, next_packet >> 8), NULL);
-
-    // Decrement the packet counter
-    enc28j60_cmd_buf_encode_cmd(eth, BFS_CMD(ECON2, PKTDEC), NULL);
-
+    rx_release_encode(eth, next_packet);
     enc28j60_cmd_buf_execute(eth);
 }
 
@@ -1105,20 +1115,7 @@ void enc28j60_frame_discard(enc28j60 *eth, uint32_t rx_info)
     uint16_t next_packet = ENC28J60_RX_NEXT(rx_info);
 
     enc28j60_cmd_buf_reset(eth);
-    // Register bank 0
-    enc28j60_cmd_buf_encode_cmd(eth, BFC_CMD(ECON1, 0x3), NULL);
-
-    // RX read pointer
-    enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ERXRDPTL, next_packet), NULL);
-    enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ERXRDPTH, next_packet >> 8), NULL);
-
-    // RBM read pointer
-    enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ERDPTL, next_packet), NULL);
-    enc28j60_cmd_buf_encode_cmd(eth, WCR_CMD(ERDPTH, next_packet >> 8), NULL);
-
-    // Decrement the packet counter
-    enc28j60_cmd_buf_encode_cmd(eth, BFS_CMD(ECON2, PKTDEC), NULL);
-
+    rx_release_encode(eth, next_packet);
     enc28j60_cmd_buf_execute(eth);
 }
 
