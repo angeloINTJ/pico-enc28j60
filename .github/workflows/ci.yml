@@ -93,6 +93,7 @@ jobs:
             - examples/AdvancedTest
             - examples/WebServerLedToggle
             - extras/bench/BenchTest
+            - extras/bench/BenchLwip
           cli-compile-flags: |
             - --warnings=all
           enable-warnings-report: true
@@ -109,6 +110,7 @@ jobs:
           sketch-paths: |
             - examples/WebServerLedToggle
             - extras/bench/BenchTest
+            - extras/bench/BenchLwip
           cli-compile-flags: |
             - --warnings=all
             - --build-property

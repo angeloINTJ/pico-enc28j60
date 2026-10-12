@@ -28,6 +28,10 @@ silicon errata. The lwIP interface without the INT pin answers faster.
 * `extras/bench`: tests for the configuration errors, a PIO without room, the transmit
   status, sharing the PIO with `SerialPIO`, an SPI transfer that stalls, and `end()`
   followed by `begin()`.
+* `extras/bench/BenchLwip` and `benchlwip.py`: tests of the lwIP interface on the
+  hardware, with the PC on the other side: DHCP, ping both ways, TCP and UDP servers,
+  a TCP client, DNS, a static address, `end()` followed by `begin()`, fragmented
+  datagrams, and the cable being pulled out and put back.
 * A GitHub Actions workflow: `arduino-lint`, the formatting of the sources, and a build
   of every example for the Pico, Pico W, Pico 2 and Pico 2 W.
 

@@ -57,6 +57,40 @@ python3 extras/bench/bench.py --ip 192.168.3.77 --flash --irq 6   # INT wired to
 Arduino libraries folder) and uploads it. Select tests with
 `--tests init,ping,rx`. The exit code is 0 only if everything passed.
 
+## lwIP interface test
+
+`BenchLwip` is the sketch for `PicoENC28J60lwIP`, driven by `benchlwip.py`, which is
+the other side of the network. It needs a DHCP server on the LAN and, for the static
+address test, one free address:
+
+```
+python3 extras/bench/benchlwip.py --flash --static-ip 192.168.3.78
+python3 extras/bench/benchlwip.py --flash --irq 6 --static-ip 192.168.3.78   # INT wired to GP6
+```
+
+| Test      | What it proves                                                              |
+|-----------|-----------------------------------------------------------------------------|
+| `dhcp`    | the interface gets an address from the DHCP server, on the network of the PC |
+| `ping`    | the PC pings the board, also with 1400-byte payloads (3000-byte pings, which are fragmented, are reported) |
+| `tcp`     | 200000 random bytes, in chunks of random sizes, are echoed through one connection by the TCP server of the board |
+| `tcppar`  | three connections at once, each asking and getting an answer 150 times |
+| `tcpcycle`| 40 connections opened, used and closed in a row: all work, the heap does not shrink |
+| `udp`     | datagrams of 1 to 1472 bytes are echoed, none lost or corrupted (a 3000-byte one, fragmented, is reported) |
+| `pingout` | the board pings the PC |
+| `client`  | the board opens a TCP connection to the PC and moves 100 kB each way, checked byte by byte |
+| `udpsend` | the board sends 100 UDP datagrams to the PC |
+| `dns`     | the board resolves a name (reported; add `--dns-name` to make it a test) |
+| `flap`    | the PHY is powered down and up, like a cable pulled out and put back: the link change is seen, lwIP is told, the DHCP client asks again, and ping and TCP work afterwards |
+| `static`  | a static address instead of DHCP (needs `--static-ip`), then DHCP again |
+| `lifecycle` | `end()` and `begin()` three times: every start gets an address and the heap does not shrink |
+| `heap`    | the free heap at the end against the beginning |
+
+A bulk transfer through several connections at once is not among them: the chip
+reads a frame from its buffer in 3.5 ms and a frame can arrive every 1.2 ms, so
+that only makes TCP back off. The sketch also answers `DIAG`, which prints the
+registers of the chip and the pointers of the driver, for finding out why a
+transfer failed.
+
 ## Web server test
 
 `examples/WebServerLedToggle` has its own test, which needs only the address the

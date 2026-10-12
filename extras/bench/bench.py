@@ -143,12 +143,14 @@ def find_port(explicit):
     return cands[0]
 
 
-def flash(port, fqbn, irq_pin=None):
-    build = os.path.join(tempfile.gettempdir(), "picoenc-bench-build-%s" % ("irq%d" % irq_pin if irq_pin is not None else "poll"))
+def flash(port, fqbn, irq_pin=None, sketch=SKETCH):
+    """Compile a bench sketch against this checkout and upload it."""
+    build = os.path.join(tempfile.gettempdir(), "picoenc-%s-build-%s" %
+                         (os.path.basename(sketch), "irq%d" % irq_pin if irq_pin is not None else "poll"))
     cmd = ["arduino-cli", "compile", "--fqbn", fqbn, "--library", REPO, "--build-path", build]
     if irq_pin is not None:
         cmd += ["--build-property", "compiler.cpp.extra_flags=-DBENCH_IRQ_PIN=%d" % irq_pin]
-    subprocess.run(cmd + [SKETCH], check=True)
+    subprocess.run(cmd + [sketch], check=True)
     # The core's reset-and-deploy helper only works with the real device node,
     # not with the /dev/serial/by-id symlink.
     subprocess.run(["arduino-cli", "upload", "-p", os.path.realpath(port), "--fqbn", fqbn,
