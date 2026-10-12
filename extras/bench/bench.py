@@ -555,8 +555,9 @@ def t_discard(p, host_ip, irq, count=9):
     time.sleep(0.3)
     before = kv(p.cmd("PEEK", "PEEK"))
     line_before = num(stats(p), "int")
-    drained = kv(p.cmd("DRAIN", "DRAINDONE", 10))
-    after = kv(p.cmd("PEEK", "PEEK"))
+    # DRAIN also says what hasPacket(), available() and peekInterruptFlags() return right after it: asked by a
+    # separate PEEK, a frame of the LAN that came in meanwhile made them look wrong
+    drained = after = kv(p.cmd("DRAIN", "DRAINDONE", 10))
     p.cmd("HOLD 0", "OK")
     time.sleep(0.5)
     s = stats(p)

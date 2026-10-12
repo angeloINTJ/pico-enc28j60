@@ -919,8 +919,13 @@ static void cmdDrain()
         total++;
     }
     st.discarded += dropped;
-    Serial.printf("DRAINDONE total=%lu dropped=%lu left=%u\n", (unsigned long)total, (unsigned long)dropped,
-                  eth.available());
+    // What the functions that only look say right after the drain, in the same command: a frame of the LAN that
+    // comes in before a PEEK could ask would count against them otherwise
+    bool pkt = eth.hasPacket();
+    uint8_t avail = eth.available();
+    uint8_t flags = eth.peekInterruptFlags();
+    Serial.printf("DRAINDONE total=%lu dropped=%lu left=%u pkt=%d avail=%u flags=0x%02X\n", (unsigned long)total,
+                  (unsigned long)dropped, avail, pkt, avail, flags);
 }
 
 // LINKEVENT: power the PHY down and up again, and watch hasLinkChange() report each change and
