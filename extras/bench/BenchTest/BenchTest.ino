@@ -23,9 +23,9 @@
  * Before the chip is initialized for real, setup() checks that begin() fails,
  * fast and for the right reason, with no chip behind the pins, with settings
  * that make no sense and with no room left in the PIO. The commands PIOSHARE,
- * STALL, LIFECYCLE and TSV check what the driver does about the other users of
- * the PIO, a state machine that stops, begin() after end(), and the status of a
- * transmitted frame.
+ * STALL, LIFECYCLE, TSV and TXMIX check what the driver does about the other
+ * users of the PIO, a state machine that stops, begin() after end(), the status
+ * of a transmitted frame, and sending with the longest receive buffer.
  */
 #include <PicoENC28J60.h>
 #include <SerialPIO.h>
@@ -523,6 +523,40 @@ static void cmdTx(bool broadcast, uint32_t count, uint16_t plen, uint32_t gapUs)
     Serial.printf("TXDONE sent=%lu fail=%lu\n", (unsigned long)ok, (unsigned long)fail);
 }
 
+// TXMIX <receive buffer size> <count>: begin() again with that receive buffer, which leaves the rest of the RAM of
+// the chip to send from, and broadcast frames of all lengths in turn, the longest first. With a transmit area of
+// less than two full frames every frame has to be found room for after the pointers wrapped. The default
+// configuration is back afterwards.
+static void cmdTxMix(uint16_t rxSize, uint32_t count)
+{
+    static const uint8_t bcMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    static const uint8_t bcIp[4] = {255, 255, 255, 255};
+    static const uint16_t PLEN[] = {1472, 10, 1472, 400, 1472, 1000, 18, 1472, 700, 1472, 100, 1300};
+    eth.end();
+    ENC28J60Config c = makeConfig();
+    c.rx_buffer_size = rxSize;
+    bool began = eth.begin(c);
+    for (uint32_t t0 = millis(); began && !eth.linkStatus() && millis() - t0 < 10000;) {
+        delay(50);  // the link takes a moment to come up after begin()
+    }
+    uint32_t ok = 0, fail = 0;
+    for (uint32_t s = 0; began && s < count; s++) {
+        uint16_t plen = PLEN[s % (sizeof(PLEN) / sizeof(PLEN[0]))];
+        uint8_t* p = txbuf + 42;
+        memcpy(p, "PBNC", 4);
+        wr32(p + 4, s);
+        wr16(p + 8, plen);
+        for (uint16_t i = HDR_LEN; i < plen; i++) p[i] = fill(s, i);
+        uint16_t flen = finishUdp(txbuf, bcMac, bcIp, PORT_ECHO, PORT_TX, plen, (uint16_t)s);
+        if (eth.sendFrame(txbuf, flen)) ok++;
+        else fail++;
+    }
+    eth.end();
+    bool restored = eth.begin(makeConfig());
+    Serial.printf("TXMIXDONE rx=0x%04X began=%d sent=%lu fail=%lu restored=%d\n", rxSize, began, (unsigned long)ok,
+                  (unsigned long)fail, restored);
+}
+
 // PIOSHARE: start PIO users of the core, TX only serial ports, until there is no state machine left.
 // The one of the driver has to stay with the driver, and the chip has to go on answering.
 static void cmdPioShare()
@@ -647,6 +681,8 @@ static void handleCommand(char* line)
         cmdStall();
     } else if (strcmp(line, "LIFECYCLE") == 0) {
         cmdLifecycle();
+    } else if (sscanf(line, "TXMIX %u %lu", &a, &n) == 2) {
+        cmdTxMix(a, n);
     } else if (sscanf(line, "TSV %u %u", &a, &b) == 2) {
         cmdTsv((uint16_t)a, b != 0);
     } else if (sscanf(line, "TXB %lu %u %lu", &n, &a, &g) == 3) {

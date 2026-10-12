@@ -51,6 +51,13 @@ silicon errata. The lwIP interface without the INT pin answers faster.
   `sendFrame()` return `false`.
 * The pad setting of the MAC (`MACON3.PADCFG`) padded short frames to 64 bytes before the
   FCS, so they went out with 68 bytes. They are 64 bytes now.
+* With a receive buffer of 0x1600 bytes or more (`rx_buffer_size`, up to 0x1A00), which
+  leaves a transmit area shorter than two full frames, `sendFrame()` refused more and
+  more frames and in the end every long one: the area was not started over when it
+  was empty, so a frame that did not fit before the end of the RAM never found room
+  after it. In a test with frames of all lengths, 238 of 240 failed with 0x1A00 and
+  39 of 240 with 0x1600; a TCP connection whose stack tried to send a full-size
+  segment never recovered. The default buffer was not affected.
 * `BasicTest` and `AdvancedTest` sent forged ARP and ICMP packets claiming to be
   192.168.1.100, which could confuse a real network. They send a broadcast with the
   experimental EtherType 0x88B5 now.

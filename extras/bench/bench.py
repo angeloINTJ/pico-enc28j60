@@ -44,7 +44,7 @@ PICO_MAC = "02:50:49:43:4f:01"
 PORT_RX, PORT_ECHO, PORT_TX, PEER_PORT = 9999, 9997, 9998, 9998
 SIZES = [10, 18, 100, 400, 800, 1200, 1472]  # UDP payload sizes
 ALL_TESTS = ["init", "cfgerr", "pioful", "ping", "rx", "echo", "tx", "txlong", "txburst", "txb", "txblong",
-             "txbburst", "soak", "rxflood", "txstat", "pioshare", "stall", "lifecycle"]
+             "txbburst", "soak", "rxflood", "txstat", "pioshare", "stall", "lifecycle", "txmix"]
 IRQ_TESTS = ["irqidle", "irqedge", "irqlink"]  # only with --irq
 results = []
 
@@ -472,6 +472,43 @@ def t_lifecycle(p, ip):
             "up" if link else "DOWN", replies))
 
 
+def t_txmix(p, host_ip, count=240):
+    """With the longest receive buffer only 1536 bytes are left to send from: frames of every length, the longest
+    included, still have to find room, over and over."""
+    results = []
+    for rx_size in (0x1A00, 0x1600):
+        p.cmd("RESET", "OK")
+        sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sk.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sk.bind(("", PORT_TX))
+        p.send("TXMIX %d %d" % (rx_size, count))
+        got, dup, corrupt = set(), 0, 0
+        first = True
+        while len(got) < count:
+            sk.settimeout(15.0 if first else 1.5)  # the board starts over first, and the link takes a while
+            try:
+                data, _ = sk.recvfrom(2048)
+            except socket.timeout:
+                break
+            first = False
+            seq = check_payload(data)
+            if seq is None:
+                corrupt += 1
+            elif seq in got:
+                dup += 1
+            else:
+                got.add(seq)
+        sk.close()
+        done = kv(p.expect("TXMIXDONE", 60))
+        wait_link(p)
+        results.append((rx_size, len(got), dup, corrupt, num(done, "sent"), num(done, "fail"), num(done, "began"),
+                        num(done, "restored")))
+    good = all(r[1] == count and r[2] == 0 and r[3] == 0 and r[5] == 0 and r[6] == 1 and r[7] == 1 for r in results)
+    record("txmix", good, "; ".join(
+        "receive buffer 0x%04X (transmit area %d bytes): sendFrame ok=%d failed=%d, host received %d/%d, "
+        "duplicates=%d corrupted=%d" % (r[0], 0x2000 - r[0], r[4], r[5], r[1], count, r[2], r[3]) for r in results))
+
+
 def int_level(p, samples=5):
     """The level of the INT pin as the board sees it, sampled a few times over 0.2 s; 1 = idle."""
     levels = []
@@ -603,6 +640,8 @@ def main():
             t_stall(p, args.ip)
         if "lifecycle" in wanted:
             t_lifecycle(p, args.ip)
+        if "txmix" in wanted:
+            t_txmix(p, host_ip)
         if args.irq is not None:
             if "irqidle" in wanted:
                 t_irqidle(p)

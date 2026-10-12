@@ -959,6 +959,15 @@ void enc28j60_frame_tx_confirm(enc28j60 *eth, uint32_t frame_id)
     if (eth->dev_rptr % 2) {
         ++eth->dev_rptr;
     }
+
+    // Nothing is waiting any more: start over from the beginning of the
+    // transmit area. A frame that does not fit before the end of the RAM goes
+    // there, and it has to find the whole area free; with the read pointer left
+    // where the last frame ended, a transmit area shorter than two full frames
+    // refused every long frame, for ever.
+    if (eth->dev_rptr == eth->wptr) {
+        eth->dev_rptr = eth->wptr = eth->cfg->rx_size;
+    }
 }
 
 //! The value for ERXRDPT after the frame ending right before next_packet has
