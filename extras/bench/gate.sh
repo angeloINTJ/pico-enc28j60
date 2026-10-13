@@ -47,7 +47,7 @@ Options:
   -h, --help       this text
 
 Needs Linux, arduino-cli with the rp2040 core, pyserial and ping; with --web-mac also curl and ip.
-About 16 minutes with --irq and --web-mac. summary.txt ends with DONE if the gate got to the end.
+About 19 minutes with --irq and --web-mac. summary.txt ends with DONE if the gate got to the end.
 EOF
 }
 

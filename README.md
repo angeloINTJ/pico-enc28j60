@@ -106,7 +106,7 @@ Install it from this repository; the Arduino Library Manager does not list it ye
  * From a clone, which makes it easy to stay up to date: clone the repository into
    your Arduino libraries folder (usually `~/Arduino/libraries`).
  * PlatformIO with the arduino-pico core:
-   `lib_deps = https://github.com/angeloINTJ/pico-enc28j60.git#v1.2.0`
+   `lib_deps = https://github.com/angeloINTJ/pico-enc28j60.git#v1.3.0`
 
 What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -277,15 +277,16 @@ keep that receive loop.
 Give it a config with `irq_pin` set and it is driven by the INT line: the interrupt
 handler only wakes the lwIP context up, which then reads the frames, so the chip is
 never touched from interrupt context. An idle network is free of SPI traffic then, and
-the median time of a `GET /` on the bench is 10 ms, against 11 ms when polled. The timer
+the median time of a `GET /` on the bench is 9 ms, against 10 ms when polled. The timer
 of `setPollPeriod()` remains as a safety net (20 ms then).
 
 Without the INT pin the chip is polled: every 5 ms while the line is quiet, and every
 millisecond right after a frame came in and for 100 ms after one went out, backing off
-to 5 ms again when nothing arrives. A frame that waits in the chip for the wire, behind
-another, is looked after every millisecond, with the INT pin too. The peer's answer to a frame is usually on its way, and a fixed period
-made the time of a request depend on where the timer happened to fall (13 ms or 18 ms
-for the same page on the bench); with the adaptive period it is 10 to 11 ms.
+to 5 ms again when nothing arrives. The peer's answer to a frame is usually on its way,
+and a fixed period made the time of a request depend on where the timer happened to
+fall (13 ms or 18 ms for the same page on the bench); with the adaptive period it is
+10 ms. A frame that waits in the chip for the wire, behind another, is looked after
+every millisecond, with the INT pin too.
 
 ## Robustness and limitations
 
@@ -340,9 +341,10 @@ What it does not do:
    A peer that sends frames back to back faster than that overflows the buffer, and the
    frames it cannot hold are lost (`INT_RX_ERROR` says so); TCP sends them again. At
    20 MHz the flood of the bench no longer overflowed it. With the default clock, one
-   TCP connection echoes 200 kB in about a second on the bench, and three at once echo
-   64 kB each in two to five seconds, with a few frames that lwIP had no buffer for on
-   the way (`droppedNoBuffer()`), which the peer sends again.
+   TCP connection echoes 200 kB in 0.6 to 0.7 s on the bench, and three at once echo
+   64 kB each in 0.9 to 1.3 s, with 12 to 28 frames that lwIP had no buffer for on the
+   way (`droppedNoBuffer()`), which the peer sends again (six runs, polled and with the
+   INT pin, on 12 and 13 October 2026).
 
 ## Examples
 

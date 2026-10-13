@@ -47,7 +47,8 @@ Written for this fork:
   polling or driven by the INT pin.
 * `examples/`: `BasicTest`, `AdvancedTest`, `WebServerLedToggle`.
 * `extras/bench/`: the on-hardware test harness (`BenchTest.ino`, `bench.py`,
-  `BenchLwip.ino`, `benchlwip.py`, `webtest.py`) and `extras/tools/`.
+  `BenchLwip.ino`, `benchlwip.py`, `webtest.py`, `gate.sh`, `deploy.py`) and
+  `extras/tools/`.
 * `.github/`: the CI workflow and the form for bug reports.
 * `library.properties`, `keywords.txt`, `.gitattributes`, `NOTICE.md`,
   `CHANGELOG.md`, `CONTRIBUTING.md`, `README.md`, which describes the Arduino library,
@@ -63,16 +64,19 @@ Changes to Lukasz's files, which keep his copyright notice and carry a
   now SCK and CS can be any GPIO. Each SPI clock takes 4 PIO clocks, not 10, and the
   program keeps the chip select times of the data sheet (TCSS, TCSH, TCSD) at any
   clock up to 20 MHz. Typos fixed.
-* `src/pico/enc28j60-driver.h`: `cs_pin` and `spi_hz` in the configuration, and the
-  declarations of the functions added to the driver.
+* `src/pico/enc28j60-driver.h`: `cs_pin` and `spi_hz` in the configuration, the
+  statuses of `enc28j60_init_status()`, the declarations of the functions added to the
+  driver, and comments updated for what changed in it.
 * `src/enc28j60-driver.c`:
   * the separate chip select pin;
   * the SPI clock is a setting (`spi_hz`, 10 MHz by default, up to 20 MHz) where it was
-    fixed at 3.5 MHz;
+    fixed at 3.5 MHz; it is never faster than asked for, and is lowered when the
+    fractional divider of the PIO would make a period shorter than the 50 ns the chip
+    allows;
   * `enc28j60_init()` gives up instead of hanging when no chip answers (the
     oscillator-ready wait is bounded and the revision ID is checked) and returns
     `NULL`; `enc28j60_init_status()` also says why it failed, after checking the
-    configuration;
+    configuration, and `enc28j60_status_string()` puts the reason in words;
   * the PIO program is loaded once per PIO block and shared, so that initialization
     can be retried, and its absence of room is detected (`pio_add_program()` returns
     a negative number);
@@ -86,25 +90,49 @@ Changes to Lukasz's files, which keep his copyright notice and carry a
     frame aborted after a late collision is sent again (issue 13); and
     `enc28j60_frame_rx_info_blk()` kept the size of a frame but lost the pointer to
     the next one (an `=` that had to be `|=`);
+  * the same errata in the asynchronous functions, which the FreeRTOS driver uses:
+    `ERXRDPT` is kept odd (issue 14), the transmit logic is reset before each frame
+    (issue 12), a frame aborted after a late collision counts as ended, with `TXERIF`
+    as an interrupt source (issue 13), and the interrupt flags take `PKTIF` from the
+    packet counter (issue 6);
+  * in the asynchronous mode, `enc28j60_deinit()` gives back the DMA channels, the DMA
+    interrupt handler and the command buffer, the handler is added once per DMA
+    interrupt, and a lack of memory or of DMA channels at init is a status
+    (`ENC28J60_ERR_NOMEM`, `ENC28J60_ERR_DMA`) instead of a panic;
   * the transmit area starts over from its beginning when nothing is waiting to be
     sent; without that, long frames were refused with a receive buffer of 0x1600
-    bytes or more;
+    bytes or more. A frame may also end where the oldest frame waiting begins, and a
+    flag tells a full area from an empty one: before, the area refused room it had,
+    and with a receive buffer of 0x1420 bytes or more it could put a frame over the
+    one on the wire;
+  * with `-DENC28J60_PROFILE`, the wait for the wire counts its reads of `EIR` and the
+    time it takes;
   * new functions `enc28j60_frame_tx_wait_blk()`, `enc28j60_frame_send_blk()`,
+    `enc28j60_frame_send_finish_blk()`, `enc28j60_frame_tx_ended_blk()`,
     `enc28j60_tx_status_blk()`, `enc28j60_alive_blk()`, `enc28j60_set_mac_blk()`,
-    `enc28j60_rx_reset_blk()`, `enc28j60_irq_status_blk()` and
-    `enc28j60_irq_enable_blk()`.
+    `enc28j60_rx_reset_blk()`, `enc28j60_irq_status_blk()`,
+    `enc28j60_irq_enable_blk()` and `enc28j60_irq_is_tx_err()`.
 * `src/enc28j60-cmd.h`, `src/enc28j60-cmd.c`: the wait on the MII interface has a
   timeout, a few register bit definitions were added, `PHID1` was corrected, a
   signedness warning was fixed, the pad setting of the MAC makes 64 byte frames, and
-  the blocking transfer gives up when the state machine makes no progress.
-* `freertos/enc28j60-freertos-driver.c`: stops with a message if the chip does
-  not answer. Moved out of `src/` so that the Arduino IDE does not try to compile
-  it; `freertos/pico/enc28j60-freertos-driver.h` was moved and is unchanged.
+  the blocking transfer gives up when the state machine makes no progress. The
+  arguments of the command macros are in parentheses, register bank 0 or 3 is chosen
+  with one command instead of two, an asynchronous execution ends when both of its DMA
+  transfers have, not only the reception, and with `-DENC28J60_PROFILE` the blocking
+  execution counts its commands and their time, in counters that
+  `enc28j60_profile_read()` copies and `enc28j60_profile_reset()` clears.
+* `freertos/enc28j60-freertos-driver.c`: stops with a message that says why when the
+  driver cannot start, releases a frame only when one is in progress, and lost an
+  unused variable and two unused parameters. Moved out of `src/` so that the Arduino
+  IDE does not try to compile it; `freertos/pico/enc28j60-freertos-driver.h` was
+  moved and is unchanged.
 * `src/CMakeLists.txt`: paths adjusted for the files that moved.
 * `docs/c-driver.md`: his documentation of the C driver, moved from `README.md`.
   The text is his, updated where this fork changed what it describes (the length of
-  the PIO program, the state machine that is claimed, the `pio`, `sm` and `cs_pin`
-  fields) and with a list of the functions that were added.
+  the PIO program, the state machine that is claimed, the `pio`, `sm`, `cs_pin`,
+  `spi_hz` and `rx_size` fields), with a list of the functions that were added, a
+  section on the asynchronous functions and a note on the configuration that the
+  FreeRTOS driver needs.
 * `.gitignore`.
 
 Unchanged from the original: `.clang-format` and `imgs/*`.

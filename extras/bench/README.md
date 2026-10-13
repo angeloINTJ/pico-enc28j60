@@ -206,11 +206,11 @@ reason. Without `--irq` and `--web-mac` the gate is the polled suites: `bench_po
 | `--web-mac MAC` | The MAC address of the web example (below). With it the web suites run |
 | `--soak SECONDS` | The length of the soak in each web suite. Default: 240 |
 | `--spi-hz HZ` | The SPI clock of `bench.py` and `benchlwip.py`. `--spi-assert-mhz` is set to the same clock, so that the `spi` test asks for clean transfers at it |
-| `--port PORT` | The serial port of the Pico. Default: the only `/dev/serial/by-id/*Pico*`; with more than one Pico connected the gate stops and asks for it, so that no other board gets flashed (`bench.py` and `benchlwip.py` do the same). Uploads use the device node that it points to, which is what the uploader of the core needs |
+| `--port PORT` | The serial port of the Pico. Default: the only `/dev/serial/by-id/*Pico*`; with more than one Pico connected the gate stops and asks for it (`bench.py` and `benchlwip.py` do the same). Uploads go through `deploy.py`, which writes the image only to the BOOTSEL drive on the USB port of this board: the uploader of the core writes it to every board in BOOTSEL |
 | `--out DIR` | Where the logs and the summary go. Default: `$TMPDIR/picoenc-gate`, or `/tmp/picoenc-gate` |
 | `--fqbn FQBN` | The board. Default: `rp2040:rp2040:rpipico` |
 
-It takes about 16 minutes with `--irq`, `--web-mac` and the default soak (the bench of the
+It takes about 19 minutes with `--irq`, `--web-mac` and the default soak (the bench of the
 author, October 2026); the two soaks are 8 of those minutes. It needs Linux (for the serial
 port and `ip neigh`), `arduino-cli` with the core, pyserial and `ping`, the PC on the same /24 as
 the board, and with `--web-mac` also `curl` and `ip`. No root.
@@ -218,11 +218,12 @@ the board, and with `--web-mac` also `curl` and `ip`. No root.
 `summary.txt` in the output folder is the result, and `<suite>.txt` is the log of each suite:
 
 ```
-gate on 1d2db7b 0 uncommitted paths
-bench_poll rc=0 :: 28/28 passed
-bench_irq rc=0 :: 31/31 passed
-lwip_poll rc=0 :: 17/17 passed
-lwip_irq rc=0 :: 17/17 passed
+gate on <commit> 0 uncommitted paths
+bench_poll rc=0 :: 37/37 passed
+bench_cost rc=0 :: 1/1 passed
+bench_irq rc=0 :: 40/40 passed
+lwip_poll rc=0 :: 19/19 passed
+lwip_irq rc=0 :: 19/19 passed
 web_poll rc=0 :: 8/8 passed
 web_irq rc=0 :: 8/8 passed
 DONE
@@ -233,7 +234,7 @@ of the suite, comes its line with `passed`, or the last line of its log if it ha
 says why it did not get there. For the web suites the status is 3 if the example did not compile,
 4 if it did not upload, 5 if the board was not found, and otherwise that of `webtest.py`. `DONE`
 is the last line, and is missing if the gate did not get to the end. The counts above are those
-of release 1.2.0 on the bench of the author; they grow when tests are added.
+of release 1.3.0 on the bench of the author; they grow when tests are added.
 
 **The MAC address of the web example.** The example does not print it, and the gate finds the
 board by it: five seconds after an upload it pings the 254 addresses of the /24 of `--ip`, up to

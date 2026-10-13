@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 - 2026-10-12
 
 The asynchronous functions of the C driver, the ones the FreeRTOS+TCP driver uses, had
 never been run in this fork. The bench now runs them the way that driver does, and they
@@ -9,10 +9,60 @@ now, and follow the same silicon errata as the blocking functions. The tools tha
 a change before it goes in (the hardware gate, a check of every commit, the timing of
 the PIO program) are part of the repository now.
 
-The lwIP interface sends full-size frames at 787 kB/s instead of 474: it uploads a frame
-while the one before is on the wire. The transmit area of the chip, which the FreeRTOS
-driver already used that way, refused room it had, and with a long receive buffer could
-give a frame bytes of the one being sent.
+The lwIP interface is faster both ways. It sends full-size frames at 773 kB/s instead of
+474 (777 instead of 480 with the INT pin): it uploads a frame while the one before is on
+the wire. It no longer loses frames that come in while it sends, and a download of 100 kB
+from a PC takes 140 ms instead of 0.2 to 1.5 s. The transmit area of the chip, which the
+FreeRTOS driver already used that way, refused room it had, and with a long receive
+buffer could give a frame bytes of the one being sent. A flaw of the uploader of the core
+had the bench flash any board in BOOTSEL; it now flashes only the one on its port.
+
+Checked on the same bench as 1.2.0, with the arduino-pico core 6.3.0 and the SPI clock at
+10 MHz, on the zip of this release installed as a user would install it: the 37 tests of
+`bench.py` (40 with the INT pin) and its `cost` test in the build with the counters of the
+driver, the 19 tests of `benchlwip.py` and the 8 HTTP tests of `webtest.py`, with and
+without the INT pin, with a soak of 240 s in each mode; `bench.py` and `benchlwip.py` also
+at 20 MHz. None failed.
+
+### Added
+
+* `enc28j60_irq_is_tx_err()` and the status `ENC28J60_ERR_DMA` in the C driver.
+* `extras/bench`: an asynchronous mode of `BenchTest`, which gives the chip to the
+  asynchronous functions and runs the interrupt branch of the FreeRTOS driver on them,
+  and seven tests in `bench.py`: reception with `ERXRDPT` read back, frames dropped
+  unseen, a stream of small frames with no pause between calls, UDP echo, a transmit
+  stream, an overload, and eight starts and stops of the driver (under a watchdog, so
+  that a driver that stops the firmware restarts the board).
+* `extras/bench/gate.sh` runs every suite of the bench on a board, polled and with the
+  INT pin, and writes a summary; a change to the driver, the PIO program or the lwIP
+  interface goes in only after it passed.
+* `extras/tools/check-commits.sh` checks every commit of a branch (formatting, links,
+  four sketches built); `extras/tools/check-format.sh` is the formatting check of the CI,
+  in one place.
+* `extras/tools/pio-sim.py` simulates the SPI program of the PIO, as pioasm assembles
+  it, and the CI checks with it that the chip select times and the clock period of the
+  data sheet (table 16-6) hold at the fastest SPI clock. A copy of the program with a
+  shorter chip select hold fails it.
+* `udprate` in `extras/bench/benchlwip.py`: the board sends 500 UDP datagrams of 1472
+  bytes with no pause and times them. Every one has to arrive intact and be counted by
+  the driver, and at the default SPI clock a frame has to take less than one that is
+  uploaded and then waited for.
+* `enc28j60_frame_send_finish_blk()`, the second half of `enc28j60_frame_send_blk()`
+  after `enc28j60_frame_tx_blk()`, so that the next frame can be uploaded while one is
+  on the wire, and `enc28j60_frame_tx_ended_blk()`, which tells with one read whether it
+  has ended.
+* `txring` in `extras/bench/bench.py` sends through the C driver the way the lwIP
+  interface does, each frame uploaded while the one before is on the wire, with receive
+  buffers of several sizes.
+* Built with `-DENC28J60_PROFILE`, the blocking functions of the C driver count their
+  SPI commands and the microseconds they take (`enc28j60_profile_read()` in
+  `src/enc28j60-cmd.h`). Without the define the code is the same as before.
+* `cost` in `bench.py --flash --profile`, a suite of its own in `gate.sh`, fails when
+  receiving, uploading or starting a frame takes more SPI commands than the code needs;
+  `txfull` times 200 full-size frames through `sendFrame()`.
+* `download` in `extras/bench/benchlwip.py`: the board reads 100 kB from the PC five
+  times, and with the INT pin the PC must not wait for a timeout to send a segment again
+  (its kernel counts them per connection from Linux 6.7).
 
 ### Fixed
 
@@ -99,46 +149,6 @@ give a frame bytes of the one being sent.
   213-1062 ms with the INT pin; they take 136-356 ms polled (one of five waited for a
   timeout) and 136-137 ms with the INT pin, none. Sending full-size UDP datagrams back
   to back went from 804 to 777 kB/s with the INT pin and from 787 to 773 kB/s polled.
-
-### Added
-
-* `enc28j60_irq_is_tx_err()` and the status `ENC28J60_ERR_DMA` in the C driver.
-* `extras/bench`: an asynchronous mode of `BenchTest`, which gives the chip to the
-  asynchronous functions and runs the interrupt branch of the FreeRTOS driver on them,
-  and seven tests in `bench.py`: reception with `ERXRDPT` read back, frames dropped
-  unseen, a stream of small frames with no pause between calls, UDP echo, a transmit
-  stream, an overload, and eight starts and stops of the driver (under a watchdog, so
-  that a driver that stops the firmware restarts the board).
-* `extras/bench/gate.sh` runs every suite of the bench on a board, polled and with the
-  INT pin, and writes a summary; a change to the driver, the PIO program or the lwIP
-  interface goes in only after it passed.
-* `extras/tools/check-commits.sh` checks every commit of a branch (formatting, links,
-  four sketches built); `extras/tools/check-format.sh` is the formatting check of the CI,
-  in one place.
-* `extras/tools/pio-sim.py` simulates the SPI program of the PIO, as pioasm assembles
-  it, and the CI checks with it that the chip select times and the clock period of the
-  data sheet (table 16-6) hold at the fastest SPI clock. A copy of the program with a
-  shorter chip select hold fails it.
-* `udprate` in `extras/bench/benchlwip.py`: the board sends 500 UDP datagrams of 1472
-  bytes with no pause and times them. Every one has to arrive intact and be counted by
-  the driver, and at the default SPI clock a frame has to take less than one that is
-  uploaded and then waited for.
-* `enc28j60_frame_send_finish_blk()`, the second half of `enc28j60_frame_send_blk()`
-  after `enc28j60_frame_tx_blk()`, so that the next frame can be uploaded while one is
-  on the wire, and `enc28j60_frame_tx_ended_blk()`, which tells with one read whether it
-  has ended.
-* `txring` in `extras/bench/bench.py` sends through the C driver the way the lwIP
-  interface does, each frame uploaded while the one before is on the wire, with receive
-  buffers of several sizes.
-* Built with `-DENC28J60_PROFILE`, the blocking functions of the C driver count their
-  SPI commands and the microseconds they take (`enc28j60_profile_read()` in
-  `src/enc28j60-cmd.h`). Without the define the code is the same as before.
-* `cost` in `bench.py --flash --profile`, a suite of its own in `gate.sh`, fails when
-  receiving, uploading or starting a frame takes more SPI commands than the code needs;
-  `txfull` times 200 full-size frames through `sendFrame()`.
-* `download` in `extras/bench/benchlwip.py`: the board reads 100 kB from the PC five
-  times, and with the INT pin the PC must not wait for a timeout to send a segment again
-  (its kernel counts them per connection from Linux 6.7).
 
 ### Changed
 
