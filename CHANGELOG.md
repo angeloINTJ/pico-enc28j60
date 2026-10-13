@@ -79,6 +79,12 @@ give a frame bytes of the one being sent.
   a model of the area run with random frames at every even receive buffer size from
   0x0800 to 0x1A00 (32 million operations) and with every sequence of six operations at
   the edges (48 million).
+* `extras/bench`: `--flash` and the web suites of `gate.sh` uploaded through the
+  uploader of the core, which writes the image to every board in BOOTSEL: on 2026-10-12
+  a second Pico that was put in BOOTSEL at that moment got the firmware of the bench
+  instead of the board on `--port`. `extras/bench/deploy.py` restarts the board of the
+  port and writes the image only to the BOOTSEL drive that appears on the same USB port
+  of the PC.
 
 ### Added
 

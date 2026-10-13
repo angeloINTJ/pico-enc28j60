@@ -193,8 +193,8 @@ web_suite() { # web_suite poll|irq: build the web example, flash it, find it on 
     fi
     arduino-cli compile --fqbn "$fqbn" --library "$repo" --build-path "$build" \
         ${flags[@]+"${flags[@]}"} "$repo/examples/WebServerLedToggle" || return 3
-    # The uploader of the core needs the device node, not the link in /dev/serial/by-id
-    arduino-cli upload -p "$(readlink -f "$port")" --fqbn "$fqbn" --input-dir "$build" || return 4
+    # Not the uploader of the core, which writes the image to every board in BOOTSEL
+    python3 "$here/deploy.py" "$port" "$build/WebServerLedToggle.ino.uf2" || return 4
     found=$(find_web) || {
         echo "web example with MAC $web_mac not found on $prefix.0/24"
         return 5

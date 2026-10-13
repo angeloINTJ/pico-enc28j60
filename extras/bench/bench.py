@@ -52,6 +52,9 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from deploy import deploy  # noqa: E402
+
 try:
     import serial
 except ImportError:
@@ -194,10 +197,9 @@ def flash(port, fqbn, irq_pin=None, sketch=SKETCH, spi_hz=None, profile=False):
     if defines:
         cmd += ["--build-property", "compiler.cpp.extra_flags=" + " ".join(defines)]
     subprocess.run(cmd + [sketch], check=True)
-    # The core's reset-and-deploy helper only works with the real device node,
-    # not with the /dev/serial/by-id symlink.
-    subprocess.run(["arduino-cli", "upload", "-p", os.path.realpath(port), "--fqbn", fqbn,
-                    "--input-dir", build], check=True)
+    # Not the uploader of the core, which writes the image to every board in BOOTSEL: deploy.py writes it only to the
+    # one on the USB port of this serial port
+    deploy(port, os.path.join(build, os.path.basename(sketch) + ".ino.uf2"))
     # Wait for the board to drop off the bus and come back with the new firmware.
     deadline = time.time() + 5
     while os.path.exists(port) and time.time() < deadline:
