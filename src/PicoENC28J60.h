@@ -399,15 +399,29 @@ class PicoENC28J60 {
     Stats _stats = {};
 
     // Sending that does not wait for the wire, for the lwIP interface only:
-    // a frame goes into the chip while the one before is still on the wire.
-    // sendFrame() keeps waiting, as documented.
+    // a frame goes into the chip while the one before is still on the wire,
+    // and starts once that one has ended. sendFrame() keeps waiting, as
+    // documented.
     friend class PicoENC28J60LwipDriver;
     static const uint32_t NO_FRAME = 0xFFFFFFFF; // ENC28J60_INVALID_FRAME_ID
+    // Frames in the chip behind the one on the wire, oldest first; when it is
+    // full the next frame waits for the wire
+    static const uint8_t TX_QUEUE_LENGTH = 8;
     uint32_t _txFrame = NO_FRAME; // on the wire, and not waited for yet
-    bool _sendQueued(const uint8_t *frame, uint16_t len);
-    bool _sendFinish();
+    uint32_t _txStartedUs = 0; // when it started
+    uint32_t _txQueue[TX_QUEUE_LENGTH];
+    uint8_t _txQueueHead = 0;
+    uint8_t _txQueued = 0;
+    bool _sendQueued(const uint8_t *frame, uint16_t len, bool behindWire);
+    bool _sendFinish(uint32_t timeout_us);
+    void _sendStartNext();
     void _sendPoll();
+    void _sendDrain();
     void _sendLost();
+    bool _sendPending() const
+    {
+        return _txFrame != NO_FRAME || _txQueued != 0;
+    }
 
     void _hardwareReset();
     void _enableChipInterrupts();

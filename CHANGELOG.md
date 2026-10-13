@@ -85,6 +85,20 @@ give a frame bytes of the one being sent.
   instead of the board on `--port`. `extras/bench/deploy.py` restarts the board of the
   port and writes the image only to the BOOTSEL drive that appears on the same USB port
   of the PC.
+* `PicoENC28J60lwIP` lost frames that came in while it sent: it waited for its previous
+  frame, often an acknowledgement, to leave the wire, which in half duplex waits for as
+  long as the peer keeps sending (up to 3.8 ms measured), and nobody read the chip
+  meanwhile; without the INT pin the chip was also looked at only every 5 ms soon after
+  the traffic stopped, and a burst that began then overflowed it. lwIP acknowledges a
+  segment that fills a gap with a delayed acknowledgement, so the peer had to wait for a
+  timeout of 200 ms or more. A frame now waits in the chip for the wire while the
+  reception goes on, and without the INT pin the chip is looked at every millisecond for
+  100 ms after the board sent a frame. FreeRTOS builds of the core, which poll every 20
+  ms, still wait for the frame before. On the bench (2026-10-12, SPI clock 10 MHz),
+  downloads of 100 kB from a PC took 605-1539 ms polled, with 2 to 5 timeouts each, and
+  213-1062 ms with the INT pin; they take 136-356 ms polled (one of five waited for a
+  timeout) and 136-137 ms with the INT pin, none. Sending full-size UDP datagrams back
+  to back went from 804 to 777 kB/s with the INT pin and from 787 to 773 kB/s polled.
 
 ### Added
 
@@ -129,13 +143,13 @@ give a frame bytes of the one being sent.
 ### Changed
 
 * `PicoENC28J60lwIP` puts a frame into the chip while the one before is still on the
-  wire, and waits for that one only when the next frame is ready to start, or when the
-  polling sees that it ended; `PicoENC28J60::sendFrame()` still waits for the wire. On
-  the bench (SPI clock 10 MHz, 2026-10-12), 500 UDP datagrams of 1472 bytes with no
-  pause went out at 787 kB/s polled and 804 kB/s with the INT pin (1.87 and 1.83 ms a
-  frame), from 474 and 480 kB/s (3.10 and 3.07 ms), and a TCP upload of 100 kB from the
-  board took 148-151 ms instead of 238-291 ms. `stats().tx_frames` counts such a frame
-  once it has left the wire, and `tx_failures` one that fails after it was handed over.
+  wire, and starts it once that one has ended; `PicoENC28J60::sendFrame()` still waits
+  for the wire. On the bench (SPI clock 10 MHz, 2026-10-12), 500 UDP datagrams of 1472
+  bytes with no pause went out at 773 kB/s polled and 777 kB/s with the INT pin (1.90
+  and 1.89 ms a frame), from 474 and 480 kB/s (3.10 and 3.07 ms), and a TCP upload of
+  100 kB from the board took 149-151 ms instead of 238-291 ms. `stats().tx_frames`
+  counts such a frame once it has left the wire, and `tx_failures` one that fails after
+  it was handed over.
 
 ## 1.2.0 - 2026-10-12
 

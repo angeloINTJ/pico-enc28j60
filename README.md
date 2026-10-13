@@ -281,8 +281,9 @@ the median time of a `GET /` on the bench is 10 ms, against 11 ms when polled. T
 of `setPollPeriod()` remains as a safety net (20 ms then).
 
 Without the INT pin the chip is polled: every 5 ms while the line is quiet, and every
-millisecond right after a frame went out or came in, backing off to 5 ms again when
-nothing arrives. The peer's answer to a frame is usually on its way, and a fixed period
+millisecond right after a frame came in and for 100 ms after one went out, backing off
+to 5 ms again when nothing arrives. A frame that waits in the chip for the wire, behind
+another, is looked after every millisecond, with the INT pin too. The peer's answer to a frame is usually on its way, and a fixed period
 made the time of a request depend on where the timer happened to fall (13 ms or 18 ms
 for the same page on the bench); with the adaptive period it is 10 to 11 ms.
 

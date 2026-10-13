@@ -155,9 +155,16 @@ class PicoENC28J60LwipDriver {
             data = joined;
             len = p->tot_len;
         }
-        // Into the chip while the frame before is still on the wire; that one
-        // is waited for now, this one by the next frame or by the polling
-        bool sent = _eth._sendQueued(data, len);
+        // Into the chip while the frame before is still on the wire, and on
+        // the wire once that one has ended: the polling looks every
+        // millisecond while a frame waits. The core of a FreeRTOS build polls
+        // every 20 ms at best, so there the frame before is waited for, and
+        // this one starts at once.
+#ifdef __FREERTOS
+        bool sent = _eth._sendQueued(data, len, false);
+#else
+        bool sent = _eth._sendQueued(data, len, true);
+#endif
         free(joined);
         _traffic++;
         if (_sent) {
@@ -222,6 +229,13 @@ class PicoENC28J60LwipDriver {
     uint32_t traffic() const
     {
         return _traffic;
+    }
+
+    //! Frames in the chip that wait for the wire, or the one on it, while the
+    //! chip works
+    bool sendPending() const
+    {
+        return _eth._sendPending() && !_eth._failed();
     }
 
     //! More frames may be waiting: lwIP reads a limited number of them at a
@@ -440,9 +454,12 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
         _pollQueued = false;
         async_context_remove_at_time_worker(context, &_pollWorker);
         if (_irq) {
-            LwipIntfDev<PicoENC28J60LwipDriver>::end(); // stops the wake-ups
-                                                        // first
+            // Before the chip is stopped: end() sends the frames that wait for
+            // the wire, and the worker that the INT pin wakes must not talk to
+            // the chip meanwhile. A wake-up that comes after this finds no
+            // worker to run.
             async_context_remove_when_pending_worker(context, &_irqWorker);
+            LwipIntfDev<PicoENC28J60LwipDriver>::end();
             return;
         }
 #endif
@@ -453,7 +470,8 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
      * How often to check the chip for frames while the line is quiet, in
      * milliseconds. Defaults to 5, or to 20 with an INT pin, where it only has
      * to catch what the interrupt missed. Without an INT pin the chip is looked
-     * at sooner after each frame, see nextPollMs(), whatever this is set to.
+     * at every millisecond for a while after each frame, see nextPollMs(),
+     * whatever this is set to; with it, while a frame waits for the wire.
      */
     void setPollPeriod(uint32_t ms)
     {
@@ -521,17 +539,24 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
     // How long to wait before looking at the chip again. Without the INT pin
     // the peer's answer to a frame that went out, and the next frame of a
     // burst, are usually about to arrive: after traffic the chip is looked at
-    // every millisecond, then at growing intervals up to the relaxed period
-    // while nothing comes. The peer is served within a millisecond instead of
-    // up to a full period, and an idle line costs no more than before. With a
-    // fixed period, where it happens to fall relative to the answer would
-    // decide whether a reply takes a few milliseconds or a full period more.
+    // every millisecond (for ACTIVE_HOLD_MS after a frame went out), then at
+    // growing intervals up to the relaxed period while nothing comes. The peer
+    // is served within a millisecond instead of up to a full period, and an
+    // idle line, or one where only others talk, costs no more than before.
+    // With a fixed period, where it happens to fall relative to the answer
+    // would decide whether a reply takes a few milliseconds or a full period
+    // more. In both modes a frame that waits for the wire is looked after
+    // every millisecond.
     uint32_t nextPollMs()
     {
+        bool fresh = traffic() != _seenTraffic;
+        _seenTraffic = traffic();
+        if (sendPending()) {
+            return ACTIVE_POLL_MS; // to start the frame once the wire is free
+        }
         if (_irq || _pollMs <= ACTIVE_POLL_MS) {
             _waitMs = _pollMs;
-        } else if (traffic() != _seenTraffic) {
-            _seenTraffic = traffic();
+        } else if (fresh || millis() - _lastSendMs < ACTIVE_HOLD_MS) {
             _waitMs = ACTIVE_POLL_MS;
         } else if (_waitMs < _pollMs) {
             _waitMs = _waitMs * 2 < _pollMs ? _waitMs * 2 : _pollMs;
@@ -545,7 +570,11 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
     // schedules itself when it is done.
     void pollSoon()
     {
-        if (_irq || !_pollQueued) {
+        _lastSendMs = millis();
+        // With the INT pin the chip says when a frame comes in, but not when
+        // one has gone out: a frame that waits for the wire behind it would
+        // wait for the next frame that comes in
+        if (!_pollQueued || (_irq && !sendPending())) {
             return;
         }
         int64_t left =
@@ -588,9 +617,20 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
     // handlePackets() of the core does
     static constexpr uint32_t RX_BURST_LIMIT = 9;
 
-    // The polling period right after traffic; it doubles from there while the
-    // chip has nothing for us, up to the period that was set
+    // The polling period right after traffic. It stays there for
+    // ACTIVE_HOLD_MS after a frame went out, then doubles while the chip has
+    // nothing for us, up to the period that was set.
     static constexpr uint32_t ACTIVE_POLL_MS = 1;
+
+    // An answer to a frame that went out may come as a burst, and the receive
+    // buffer of the chip holds three full-size frames by default, which arrive
+    // in 3.7 ms: looked at every 5 ms, it loses the frames after them when the
+    // burst begins right after a look. A peer often answers within tens of
+    // milliseconds (a PC took 10 ms to start sending 100 kB after the
+    // connection opened, and frames were lost), so the period stays short for
+    // a while after the board sent something. Frames that only come in, such
+    // as broadcasts, do not keep it short.
+    static constexpr uint32_t ACTIVE_HOLD_MS = 100;
 
     async_at_time_worker_t _pollWorker;
     async_when_pending_worker_t _irqWorker;
@@ -607,6 +647,7 @@ class PicoENC28J60lwIP : public LwipIntfDev<PicoENC28J60LwipDriver> {
     uint32_t _pollMs = 5;
     uint32_t _waitMs = 5; // the current polling period, see nextPollMs()
     uint32_t _seenTraffic = 0;
+    uint32_t _lastSendMs = 0;
 };
 
 #endif // PICO_ENC28J60_LWIP_H
