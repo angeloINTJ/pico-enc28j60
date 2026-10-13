@@ -212,7 +212,7 @@ stack serve a frame the moment it arrives, see below.
 | `irq_pin` | -1 | the GPIO wired to INT; -1 when it is not wired |
 | `spi_hz` | 10000000 | the SPI clock in Hz, from 100 kHz to 20 MHz, the limit of the chip. The errata ask for 8 MHz or more with the silicon revisions B1 and B4, and the default leaves room above it for the rounding of the divider of the PIO; going faster depends on the wiring. The PIO runs at four times this, so the system clock has to allow it. The clock is never faster than asked for, and is lowered when the divider would make a period shorter than the 50 ns of the data sheet: on a Pico 2 at its default 150 MHz, 20 MHz runs at 18.75 MHz (on a Pico at its default 200 MHz it is exact) |
 | `mac_addr` | all zeros | the MAC address. Left at zeros, `begin()` makes a locally administered one from the unique ID of the board, so that two boards never share it; `getMACAddress()` says which |
-| `rx_buffer_size` | `0x1000` | bytes of the 8 KB of the chip used for reception, the rest is the transmit area. Rounded down to an even number and kept between `0x0600` and `0x1A00`, so that both hold a full frame. Up to `0x141C` the transmit area holds two, which `PicoENC28J60lwIP` needs to upload a frame while the one before is on the wire |
+| `rx_buffer_size` | `0x141C` | bytes of the 8 KB of the chip used for reception, the rest is the transmit area. Rounded down to an even number and kept between `0x0600` and `0x1A00`, so that both hold a full frame. The default is the most that leaves two full frames to send from, which `PicoENC28J60lwIP` needs to upload a frame while the one before is on the wire; the receive buffer then holds three |
 | `pio_instance`, `pio_sm` | -1, -1 | the PIO block (0, 1, ...) and the state machine (0-3) to claim; -1 lets the driver take any that is free |
 
 ### PicoENC28J60
@@ -333,9 +333,10 @@ What it does not do:
    Pico 2 W, but have not been run on them. The FreeRTOS+TCP driver is the one of the
    original project, and was not built or run here; the asynchronous functions of the
    C driver that it uses were run on the bench through `BenchTest`.
- * The receive buffer of the chip is small (4 KB, 6.5 KB at most with
-   `rx_buffer_size = 0x1A00`; the transmit side only needs one frame), and a full-size
-   frame can arrive every 1.2 ms, while at the default clock reading one takes 1.3 ms.
+ * The receive buffer of the chip is small (5 KB, three full-size frames, by default;
+   6.5 KB at most with `rx_buffer_size = 0x1A00`, which leaves room to send one frame at
+   a time), and a full-size frame can arrive every 1.2 ms, while at the default clock
+   reading one takes 1.3 ms.
    A peer that sends frames back to back faster than that overflows the buffer, and the
    frames it cannot hold are lost (`INT_RX_ERROR` says so); TCP sends them again. At
    20 MHz the flood of the bench no longer overflowed it. With the default clock, one

@@ -65,8 +65,9 @@ following fields:
  * dma_irq - interrupt channel to handle DMA IRQs, defaults to 0
  * rx_size - the device has 8kB big buffer that is used for RX and TX queues the range
             from 0 to rx_size - 1 will be used for RX, the reminder for TX; defaults to
-            0x1000. Up to 0x141C the TX area holds two full-size frames, so that the next
-            one can be uploaded while the one before is on the wire
+            0x1000 (the Arduino class uses 0x141C). Up to 0x141C the TX area holds two
+            full-size frames, so that the next one can be uploaded while the one before
+            is on the wire
  * mac_addr - MAC address of the device; the default is the same fixed address for every
    device, so choose one for each
  * irq_cb - callback function for the device interrupts

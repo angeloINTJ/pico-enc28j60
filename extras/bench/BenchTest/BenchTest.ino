@@ -552,7 +552,9 @@ static void asyncConfig()
     acfg.cs_pin = c.cs_pin;
     acfg.spi_hz = c.spi_hz;
     acfg.dma_irq = 0;
-    acfg.rx_size = c.rx_buffer_size;
+    enc28j60_config* defaults = enc28j60_get_default_config();  // allocated
+    acfg.rx_size = defaults->rx_size;  // the FreeRTOS driver uses the default of the C driver, not of the class
+    free(defaults);
     memcpy(acfg.mac_addr, c.mac_addr, 6);
     acfg.irq_cb = NULL;
     acfg.notify.notify = asyncNotify;
@@ -822,7 +824,7 @@ static void cmdTxMix(uint16_t rxSize, uint32_t count)
 }
 
 // TXRING <receive buffer size> <count> <pattern>: begin() again with that receive buffer and broadcast frames through
-// the C driver the way the lwIP interface sends them: the next frame is uploaded while the one before is still on the
+// the C driver the way the FreeRTOS driver sends them: the next frame is uploaded while the one before is still on the
 // wire, and that one is waited for right before the next one starts, or first if there is no room for the next one.
 // The payload lengths come in turn from pattern 0 (all 1472 bytes, full-size frames), pattern 1 (a mix, a short
 // frame and a long one first) or pattern 2 (seven frames after which the transmit area of a receive buffer of 0x145A

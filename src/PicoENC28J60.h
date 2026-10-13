@@ -54,8 +54,11 @@ struct ENC28J60Config {
 
     // Bytes of the chip's 8 KB RAM used for reception; the rest is the transmit
     // area. Rounded down to an even number and kept between 0x0600 and 0x1A00
-    // so that both areas hold a full frame.
-    uint16_t rx_buffer_size = 0x1000;
+    // so that both areas hold a full frame. The default is the most that leaves
+    // two full frames to send from (0x2000 - 2 x (1514 + 8) bytes), which
+    // PicoENC28J60lwIP needs to upload a frame while the one before is on the
+    // wire; the receive buffer then holds three full frames.
+    uint16_t rx_buffer_size = 0x141C;
 
     // SPI clock in Hz, from 100 kHz to 20 MHz, which is the limit of the chip.
     // The errata ask for 8 MHz or more with the silicon revisions B1 and B4

@@ -150,6 +150,12 @@ give a frame bytes of the one being sent.
   100 kB from the board took 149-151 ms instead of 238-291 ms. `stats().tx_frames`
   counts such a frame once it has left the wire, and `tx_failures` one that fails after
   it was handed over.
+* `ENC28J60Config::rx_buffer_size` is 0x141C by default, where it was 0x1000: the
+  receive buffer holds three full-size frames instead of two, and the transmit area
+  still holds the two that `PicoENC28J60lwIP` needs to upload a frame while the one
+  before is on the wire. On the bench (2026-10-12), five downloads of 100 kB from a PC
+  took 138-141 ms polled, with no timeout, and 136 ms with the INT pin, with no segment
+  sent again. The C driver keeps 0x1000.
 
 ## 1.2.0 - 2026-10-12
 

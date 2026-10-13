@@ -326,8 +326,8 @@ def t_rxflood(p, host_ip, count=3000, name="rxflood", board_async=False):
     no frame header may make no sense and no wait for the DMA may time out either."""
     p.cmd("RESET", "OK")
     # Big frames, no pacing: they reach the board back to back at the 10 Mbit/s of
-    # its port. At the default SPI clock the chip cannot drain its 4 KB receive buffer
-    # as fast, and overflows; at a clock of 16 MHz or more it keeps up with the wire and
+    # its port. At the default SPI clock the chip cannot drain its receive buffer as
+    # fast, and overflows; at a clock of 16 MHz or more it keeps up with the wire and
     # the switch drops the frames before they get there. Either way what arrives has to
     # be intact, and the receiver has to be in step afterwards (rxoverflow overflows the
     # buffer on purpose, whatever the clock).
@@ -365,7 +365,7 @@ def t_rxoverflow(p, host_ip, irq, count=12, plen=1472):
     sk.bind((host_ip, 0))
     for seq in range(count):
         sk.sendto(make_payload(seq, plen), ("255.255.255.255", PORT_RX))
-        time.sleep(0.02)  # 1.2 ms on the wire each: the 4 KB buffer holds two of them
+        time.sleep(0.02)  # 1.2 ms on the wire each: the default receive buffer holds three of them
     sk.close()
     time.sleep(0.3)
     before = kv(p.cmd("PEEK", "PEEK"))
@@ -895,14 +895,14 @@ def t_txmix(p, host_ip, count=240):
 
 
 def t_txring(p, host_ip, count=240):
-    """Frames go out the way the lwIP interface sends them: the next one is uploaded while the one before is on the wire.
-    With the default receive buffer the transmit area holds two full-size frames, so the next one always finds room
-    and no upload has to wait for the wire. With longer receive buffers, frames of mixed lengths have to find room
+    """Frames go out the way the FreeRTOS driver sends them: the next one is uploaded while the one before is on the
+    wire. With a receive buffer of 0x1000, and of 0x141C, the default, where two full-size frames fill the transmit
+    area to its last byte, the next one always finds room and no upload has to wait for the wire. With longer receive buffers, frames of mixed lengths have to find room
     after the pointers wrapped, and none may be dropped; with 0x145A, seven frames used to make the transmit area give
     the next frame bytes of the one on the wire, which the board finds from the ids of the frames. Every frame has to
     arrive intact."""
     results = []
-    for rx_size, pattern in ((0x1000, 0), (0x1600, 1), (0x1A00, 1), (0x145A, 2)):
+    for rx_size, pattern in ((0x1000, 0), (0x141C, 0), (0x1600, 1), (0x1A00, 1), (0x145A, 2)):
         p.cmd("RESET", "OK")
         sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sk.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
