@@ -126,6 +126,7 @@ python3 extras/bench/benchlwip.py --flash --irq 6 --static-ip 192.168.3.78   # I
 | `udp`     | datagrams of 1 to 1472 bytes are echoed, none lost or corrupted (a 3000-byte one, fragmented, is reported) |
 | `pingout` | the board pings the PC |
 | `client`  | the board opens a TCP connection to the PC and moves 100 kB each way, checked byte by byte |
+| `download` | the board reads 100 kB from the PC 5 times: every byte arrives, and with the INT pin the PC never waits for a timeout to send a segment again (its kernel counts them per connection from Linux 6.7). A timeout costs at least 200 ms, more than the whole transfer, and comes when the chip ran out of room for a frame. Without the INT pin the timeouts are reported: at the default SPI clock the chip is read more slowly than the wire fills it |
 | `udpsend` | the board sends 100 UDP datagrams to the PC |
 | `udprate` | the board sends 500 full-size UDP datagrams to the PC with no pause, timed on the board: how fast frames go out through lwIP; every one has to arrive intact and be counted by the driver as sent, and at the default SPI clock a frame has to take less than one that is uploaded and then waited for (its time on the wire plus its bytes through the SPI: 2.43 ms at 10 MHz), which only uploading it while the one before is on the wire does |
 | `chain`   | the board sends UDP datagrams as chains of three buffers, which arrive whole |

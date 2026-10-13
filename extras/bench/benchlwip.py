@@ -21,6 +21,7 @@ import os
 import random
 import re
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -31,7 +32,8 @@ from bench import Pico, REPO, find_port, flash, info, kv, local_ip_for, num, rec
 
 SKETCH = os.path.join(REPO, "extras", "bench", "BenchLwip")
 PORT_TCP_ECHO, PORT_UDP_ECHO = 7007, 7008
-ALL_TESTS = ["dhcp", "ping", "tcp", "tcppar", "tcpbulk", "rxbuf", "tcpcycle", "udp", "pingout", "client", "udpsend", "udprate",
+ALL_TESTS = ["dhcp", "ping", "tcp", "tcppar", "tcpbulk", "rxbuf", "tcpcycle", "udp", "pingout", "client", "download",
+             "udpsend", "udprate",
              "chain", "dns", "flap", "lostchip", "static", "lifecycle", "heap"]
 
 
@@ -384,6 +386,72 @@ def t_client(c):
             t.get("up_ms", "?"), res.get("got", "?"), res.get("bad", "?"), "; " + res["err"] if "err" in res else ""))
 
 
+def tcp_counts(sk):
+    """What the kernel of this PC counted on a TCP connection: (segments sent again, timeouts it waited for). The
+    timeouts are None on a kernel without tcpi_total_rto (Linux before 6.7)."""
+    b = sk.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 248)
+    retrans = struct.unpack_from("<I", b, 100)[0] if len(b) >= 104 else None
+    rto = struct.unpack_from("<H", b, 240)[0] if len(b) >= 242 else None
+    return retrans, rto
+
+
+def t_download(c, runs=5, size=100000):
+    """The board opens a connection to this PC and reads size bytes, runs times. Every byte has to arrive, and with the
+    INT pin the kernel of this PC must not have waited for a timeout to send a segment again: a timeout costs at least
+    200 ms, more than the whole transfer, and comes when the board lost a frame for want of room in the chip. Without
+    the INT pin the timeouts are reported, not judged: at the default SPI clock the chip is read more slowly than the
+    wire fills it, and a burst that begins between two looks can still lose a frame."""
+    rows = []
+    for _ in range(runs):
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind((c.host_ip, 0))
+        srv.listen(1)
+        srv.settimeout(30)
+        port = srv.getsockname()[1]
+        res = {}
+
+        def serve():
+            try:
+                conn, _ = srv.accept()
+            except OSError as e:
+                res["err"] = "accept: %s" % e
+                return
+            conn.settimeout(30)
+            try:
+                conn.sendall(bytes(down_byte(i) for i in range(size)))
+                got = 0
+                while got < 1:
+                    b = conn.recv(65536)
+                    if not b:
+                        break
+                    got += len(b)
+                res["counts"] = tcp_counts(conn)
+            except OSError as e:
+                res["err"] = str(e)
+            finally:
+                conn.close()
+
+        th = threading.Thread(target=serve)
+        th.start()
+        t = kv(c.p.cmd("CLIENT %s %d %d %d" % (c.host_ip, port, size, 1), "CLIENT", 90))
+        th.join(40)
+        srv.close()
+        retrans, rto = res.get("counts", (None, None))
+        rows.append((t.get("ok") == "1" and num(t, "down") == size and num(t, "bad") == 0 and "err" not in res,
+                     num(t, "down_ms"), retrans, rto, res.get("err")))
+    counted = all(r[3] is not None for r in rows)
+    judged = counted and c.args.irq is not None
+    ok = all(r[0] for r in rows) and (not judged or all(r[3] == 0 for r in rows))
+    record("download", ok,
+           "%d downloads of %d bytes from this PC: %s ms; the PC sent again %s segments and waited for %s timeouts%s%s" %
+           (runs, size, ", ".join(str(r[1]) for r in rows), ", ".join(str(r[2]) for r in rows),
+            ", ".join(str(r[3]) for r in rows),
+            "" if judged else " (not judged: the board has no INT pin)" if counted else
+            " (not judged: the kernel of this PC does not count timeouts per connection, Linux 6.7 or later does)",
+            "".join("; %s" % r[4] for r in rows if r[4])))
+
+
 def udp_from_board(c, count, size, gap_ms, timeout=30):
     """The board sends count datagrams of size bytes to this PC, gap_ms apart: its reply, and the sequence numbers
     of the datagrams that arrived intact plus the number of bad ones."""
@@ -601,7 +669,8 @@ def t_heap(c):
 TESTS = {
     "dhcp": t_dhcp, "ping": t_ping, "tcp": t_tcp, "tcppar": t_tcppar, "tcpbulk": t_tcpbulk, "rxbuf": t_rxbuf,
     "tcpcycle": t_tcpcycle, "udp": t_udp,
-    "pingout": t_pingout, "client": t_client, "udpsend": t_udpsend, "udprate": t_udprate, "chain": t_chain, "dns": t_dns, "flap": t_flap,
+    "pingout": t_pingout, "client": t_client, "download": t_download, "udpsend": t_udpsend, "udprate": t_udprate,
+    "chain": t_chain, "dns": t_dns, "flap": t_flap,
     "lostchip": t_lostchip,
     "static": t_static, "lifecycle": t_lifecycle, "heap": t_heap,
 }

@@ -122,6 +122,9 @@ give a frame bytes of the one being sent.
 * `cost` in `bench.py --flash --profile`, a suite of its own in `gate.sh`, fails when
   receiving, uploading or starting a frame takes more SPI commands than the code needs;
   `txfull` times 200 full-size frames through `sendFrame()`.
+* `download` in `extras/bench/benchlwip.py`: the board reads 100 kB from the PC five
+  times, and with the INT pin the PC must not wait for a timeout to send a segment again
+  (its kernel counts them per connection from Linux 6.7).
 
 ### Changed
 
