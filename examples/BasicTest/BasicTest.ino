@@ -15,17 +15,21 @@
  */
 #include <PicoENC28J60.h>
 
-// Default pins; change them if your wiring is different
-//   SCK=GP2, MOSI(SI)=GP3, MISO(SO)=GP4, CS=GP5, RST=GP7, INT=not used
-ENC28J60Config config;
-// config.mosi_pin = 3;
-// config.miso_pin = 4;
-// config.sclk_pin = 2;
-// config.cs_pin = 5;
-// config.rst_pin = 7;
-// config.irq_pin = -1;   // -1: the chip is polled
+// Default pins: SCK=GP2, MOSI(SI)=GP3, MISO(SO)=GP4, CS=GP5, RST=GP7, INT=not used.
+// If your wiring is different, uncomment and change the lines below.
+static ENC28J60Config makeConfig()
+{
+    ENC28J60Config config;  // default pins
+    // config.mosi_pin = 3;
+    // config.miso_pin = 4;
+    // config.sclk_pin = 2;
+    // config.cs_pin = 5;
+    // config.rst_pin = 7;
+    // config.irq_pin = -1;   // -1: the chip is polled
+    return config;
+}
 
-PicoENC28J60 eth(config);
+PicoENC28J60 eth(makeConfig());
 
 static const uint16_t TEST_ETHERTYPE = 0x88B5;
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+* `examples/BasicTest`: the commented lines that change the pins were statements
+  outside of any function, so uncommenting them did not compile ("'config' does not
+  name a type"). They are in `makeConfig()` now, as in `WebServerLedToggle`.
+
 ## 1.3.0 - 2026-10-12
 
 The asynchronous functions of the C driver, the ones the FreeRTOS+TCP driver uses, had
