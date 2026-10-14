@@ -132,7 +132,8 @@ Changes to Lukasz's files, which keep his copyright notice and carry a
   the PIO program, the state machine that is claimed, the `pio`, `sm`, `cs_pin`,
   `spi_hz` and `rx_size` fields), with a list of the functions that were added, a
   section on the asynchronous functions and a note on the configuration that the
-  FreeRTOS driver needs.
+  FreeRTOS driver needs. Its FreeRTOS example used a `cfg` that it did not declare; it
+  uses `drv_cfg` now.
 * `.gitignore`.
 
 Unchanged from the original: `.clang-format` and `imgs/*`.

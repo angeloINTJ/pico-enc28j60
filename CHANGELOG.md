@@ -10,6 +10,9 @@
 * The README said that `PicoENC28J60.h` was built with core 5.0.0, which no build does,
   and that the CI builds the four boards with the oldest and the newest core. It builds
   them with 6.3.0, and the Pico with 4.0.0, 5.6.0 and the newest core.
+* `docs/c-driver.md`: the FreeRTOS example passed `cfg->mac_addr` and
+  `cfg->ipv6_addr_link`, of a `cfg` that it does not declare. It uses `drv_cfg` and an
+  address of the application now.
 
 ## 1.3.0 - 2026-10-12
 

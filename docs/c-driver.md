@@ -182,6 +182,8 @@ driver configuration options are left at their defaults:
 enc28j60_freertos_interface iface;
 static NetworkEndPoint_t endpoint_v4;
 static NetworkEndPoint_t endpoint_v6_link;
+// mac_addr, ip, net_mask, gateway, any_ip and ipv6_addr_link are the addresses that
+// the application chose
 
 void setup_network()
 {
@@ -204,7 +206,7 @@ void setup_network()
     // The ip, net_mask, and gateway below may just be zeros if DHCP is used
     FreeRTOS_FillEndPoint(&iface.iface, &endpoint_v4, (uint8_t *)&ip,
                           (uint8_t *)&net_mask, (uint8_t *)&gateway,
-                          (uint8_t *)&any_ip, cfg->mac_addr);
+                          (uint8_t *)&any_ip, drv_cfg->mac_addr);
 
     endpoint_v4.bits.bWantDHCP = pdTRUE;
 
@@ -214,10 +216,10 @@ void setup_network()
     IPv6_Address_t prefix;
     IPv6_Address_t address;
     FreeRTOS_inet_pton6("fe80::", &prefix);
-    memcpy(&address, cfg->ipv6_addr_link, 16);
+    memcpy(&address, ipv6_addr_link, 16);
 
     FreeRTOS_FillEndPoint_IPv6(&iface.iface, &endpoint_v6_link, &address,
-                               &prefix, 64, NULL, NULL, cfg->mac_addr);
+                               &prefix, 64, NULL, NULL, drv_cfg->mac_addr);
 
     FreeRTOS_IPInit_Multi();
 }
