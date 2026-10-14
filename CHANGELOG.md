@@ -7,6 +7,9 @@
 * `examples/BasicTest`: the commented lines that change the pins were statements
   outside of any function, so uncommenting them did not compile ("'config' does not
   name a type"). They are in `makeConfig()` now, as in `WebServerLedToggle`.
+* The README said that `PicoENC28J60.h` was built with core 5.0.0, which no build does,
+  and that the CI builds the four boards with the oldest and the newest core. It builds
+  them with 6.3.0, and the Pico with 4.0.0, 5.6.0 and the newest core.
 
 ## 1.3.0 - 2026-10-12
 

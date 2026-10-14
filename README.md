@@ -35,8 +35,8 @@ Janyst, whose PIO program for SPI and ENC28J60 driver in C it is built on; see
    Arduino classes use and in the asynchronous mode for FreeRTOS (which does not send
    a frame again after a late collision; see [docs/c-driver.md](docs/c-driver.md)).
  * **Checked on real hardware** by a test bench that is part of the repository, and
-   compiled by the CI for the Pico, Pico W, Pico 2 and Pico 2 W with the oldest and
-   the newest supported cores. See [Testing](#testing).
+   compiled by the CI for the Pico, Pico W, Pico 2 and Pico 2 W, and for the Pico also
+   with the oldest supported cores and the newest one. See [Testing](#testing).
 
 ## Hardware
 
@@ -111,9 +111,10 @@ Install it from this repository; the Arduino Library Manager does not list it ye
 What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 
 Requirements: the [arduino-pico](https://github.com/earlephilhower/arduino-pico) core,
-4.0.0 or newer for `PicoENC28J60.h` (built with 4.0.0, 5.0.0 and 6.x) and 5.6.0 or
-newer for `PicoENC28J60lwIP.h` (built with 5.6.0 and 6.x). The Arduino Mbed OS RP2040
-boards are not supported. Everything was run on 6.3.0.
+4.0.0 or newer for `PicoENC28J60.h` (built by the CI with 4.0.0, 5.6.0, 6.3.0 and the
+newest core) and 5.6.0 or newer for `PicoENC28J60lwIP.h` (built with 5.6.0, 6.3.0 and
+the newest core). The Arduino Mbed OS RP2040 boards are not supported. Everything was
+run on 6.3.0.
 
 ## Quick start
 
@@ -362,9 +363,11 @@ See the `examples/` folder:
 
 Every push is built by the [CI](.github/workflows/ci.yml): `arduino-lint`,
 `clang-format`, a check that the PIO header matches its source, every sketch for four
-boards (the three that can use the INT pin also built with it), the oldest and the
-newest supported cores, and the C driver as a CMake library with the Pico SDK, with
-`-Werror` and, on the driver files, the static analyzer of GCC and `-Wconversion`.
+boards with core 6.3.0 (the three that can use the INT pin also built with it), the
+examples for the Pico with the oldest supported cores (4.0.0, and 5.6.0 for the lwIP
+interface) and with the newest one, and the C driver as a CMake library with the Pico
+SDK, with `-Werror` and, on the driver files, the static analyzer of GCC and
+`-Wconversion`.
 
 The CI cannot test a network, so `extras/bench` has tests that run against a real
 board and your LAN, driven by Python scripts on the PC:

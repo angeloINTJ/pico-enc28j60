@@ -36,7 +36,7 @@ locally from the root of the repository.
 | Links between the Markdown files | `python3 extras/tools/check-links.py` |
 | The PIO header | `extras/tools/regenerate-pio-header.sh` after any change to `src/enc28j60-spi.pio`; the CI checks that the program in `src/enc28j60-spi.pio.h` is the one pioasm makes of the `.pio` file |
 | The timing of the PIO program | `python3 extras/tools/pio-sim.py --check` simulates the assembled program at the fastest SPI clock the driver allows and fails unless the chip select times and the clock period of table 16-6 of the data sheet are met (`--spi-mhz` simulates another clock, and a `.pio` file as the last argument checks another program); without `--check` it prints the report |
-| Build | the examples and the bench sketches for the Pico, Pico W, Pico 2 and Pico 2 W, with the oldest and the newest core the library supports, and the C driver as a CMake library with the Pico SDK (`-Werror`, and on the driver the static analyzer of GCC and `-Wconversion`) |
+| Build | the examples and the bench sketches for the Pico, Pico W, Pico 2 and Pico 2 W with core 6.3.0, the examples for the Pico with the oldest cores the library supports (4.0.0, and 5.6.0 for the lwIP interface) and, as a warning that holds no change back, with the newest one, and the C driver as a CMake library with the Pico SDK (`-Werror`, and on the driver the static analyzer of GCC and `-Wconversion`) |
 
 ## Testing on hardware
 
