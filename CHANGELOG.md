@@ -18,7 +18,7 @@
 
 * `keywords.txt` colors `Stats`, the type that `stats()` returns.
 
-## 1.3.0 - 2026-10-12
+## 1.3.0 - 2026-10-13
 
 The asynchronous functions of the C driver, the ones the FreeRTOS+TCP driver uses, had
 never been run in this fork. The bench now runs them the way that driver does, and they

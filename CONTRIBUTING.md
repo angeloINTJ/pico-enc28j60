@@ -57,7 +57,7 @@ commit).
 
  * One change per commit, and a subject that says what it does. The body says why:
    what was wrong, how it showed, what the data sheet says.
- * Add a line to the "Unreleased" section of [CHANGELOG.md](CHANGELOG.md) for anything
-   a user of the library can notice.
+ * Add a line to the "Unreleased" section at the top of [CHANGELOG.md](CHANGELOG.md),
+   starting one if there is none, for anything a user of the library can notice.
  * Do not claim in a commit message, a comment or the documentation what you did not
    check; say what you checked and how.
