@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 1.3.1 - 2026-10-14
+
+Corrections to an example and to the documentation; the library does what 1.3.0 did.
+Its code is that of 1.3.0: two headers changed only in comments, and the bench sketches
+and the examples other than BasicTest build to the same binaries.
+
+Checked on the same bench as 1.3.0, with the arduino-pico core 6.3.0 and the SPI clock
+at 10 MHz, on the zip of this release installed as a user would install it: the 37
+tests of `bench.py` (40 with the INT pin) and its `cost` test in the build with the
+counters of the driver, the 19 tests of `benchlwip.py` and the 8 HTTP tests of
+`webtest.py`, with and without the INT pin, with a soak of 240 s in each mode. None
+failed. The SPI clock of 20 MHz was not run again, since the code did not change.
 
 ### Fixed
 

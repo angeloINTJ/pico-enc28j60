@@ -106,7 +106,7 @@ Install it from this repository; the Arduino Library Manager does not list it ye
  * From a clone, which makes it easy to stay up to date: clone the repository into
    your Arduino libraries folder (usually `~/Arduino/libraries`).
  * PlatformIO with the arduino-pico core:
-   `lib_deps = https://github.com/angeloINTJ/pico-enc28j60.git#v1.3.0`
+   `lib_deps = https://github.com/angeloINTJ/pico-enc28j60.git#v1.3.1`
 
 What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 
