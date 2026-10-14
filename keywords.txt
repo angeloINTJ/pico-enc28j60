@@ -8,6 +8,7 @@ PicoENC28J60	KEYWORD1
 ENC28J60Config	KEYWORD1
 Error	KEYWORD1
 PicoENC28J60lwIP	KEYWORD1
+Stats	KEYWORD1
 #######################################
 # Methods and Functions (KEYWORD2)
 #######################################

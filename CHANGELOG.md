@@ -14,6 +14,10 @@
   `cfg->ipv6_addr_link`, of a `cfg` that it does not declare. It uses `drv_cfg` and an
   address of the application now.
 
+### Changed
+
+* `keywords.txt` colors `Stats`, the type that `stats()` returns.
+
 ## 1.3.0 - 2026-10-12
 
 The asynchronous functions of the C driver, the ones the FreeRTOS+TCP driver uses, had
