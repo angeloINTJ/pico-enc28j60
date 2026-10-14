@@ -81,7 +81,7 @@ typedef struct {
     //! DMA_IRQ_1
     uint dma_irq;
 
-    //! Size of the  recevie buffer in bytes; the device has 8kB RAM for
+    //! Size of the receive buffer in bytes; the device has 8kB RAM for
     //! buffers; what is not a receive buffer will be used as a transmit
     //! buffer; the relative sizes depend on the anticipated application
     //! traffic.
@@ -175,7 +175,7 @@ uint8_t enc28j60_irq_status_blk(enc28j60 *eth);
 //! pin off. The function sets INTIE itself.
 void enc28j60_irq_enable_blk(enc28j60 *eth, uint8_t sources);
 
-//! Check if the interrupt is the link interrput
+//! Check if the interrupt is the link interrupt
 bool enc28j60_irq_is_link(uint8_t flags);
 
 //! Has the transmission of the frame ended, sent (TXIF) or given up on
@@ -264,7 +264,7 @@ void enc28j60_tx_status_blk(enc28j60 *eth, uint32_t frame_id, uint8_t tsv[7]);
 //! one gives back the space of any uploaded before it as well.
 void enc28j60_frame_tx_confirm(enc28j60 *eth, uint32_t frame_id);
 
-//! Get the size of an incoxing frame
+//! Get the size of an incoming frame
 uint32_t enc28j60_frame_rx_info(enc28j60 *eth);
 uint32_t enc28j60_frame_rx_info_blk(enc28j60 *eth);
 

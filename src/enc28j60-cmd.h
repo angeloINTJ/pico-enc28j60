@@ -92,10 +92,11 @@
 #define ERXNDL 0x0a
 #define ERXNDH 0x0b
 
-// Receive read pointer - position within the RX fifo where the recevie HW is
-// forbidden to write to. The recevie hardware will up to but not intluding the
-// memory pointed to by this reg. If the FIFO fills up, the new data will be
-// discarded. The controller must advance this pointer to receive new data.
+// Receive read pointer - position within the RX fifo where the receive HW is
+// forbidden to write to. The receive hardware will write up to but not
+// including the memory pointed to by this reg. If the FIFO fills up, the new
+// data will be discarded. The controller must advance this pointer to receive
+// new data.
 #define ERXRDPTL 0x0c
 #define ERXRDPTH 0x0d
 

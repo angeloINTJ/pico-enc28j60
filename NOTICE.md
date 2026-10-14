@@ -66,7 +66,7 @@ Changes to Lukasz's files, which keep his copyright notice and carry a
   clock up to 20 MHz. Typos fixed.
 * `src/pico/enc28j60-driver.h`: `cs_pin` and `spi_hz` in the configuration, the
   statuses of `enc28j60_init_status()`, the declarations of the functions added to the
-  driver, and comments updated for what changed in it.
+  driver, and comments updated for what changed in it. Typos in comments fixed.
 * `src/enc28j60-driver.c`:
   * the separate chip select pin;
   * the SPI clock is a setting (`spi_hz`, 10 MHz by default, up to 20 MHz) where it was
@@ -120,7 +120,8 @@ Changes to Lukasz's files, which keep his copyright notice and carry a
   with one command instead of two, an asynchronous execution ends when both of its DMA
   transfers have, not only the reception, and with `-DENC28J60_PROFILE` the blocking
   execution counts its commands and their time, in counters that
-  `enc28j60_profile_read()` copies and `enc28j60_profile_reset()` clears.
+  `enc28j60_profile_read()` copies and `enc28j60_profile_reset()` clears. Typos in
+  comments fixed.
 * `freertos/enc28j60-freertos-driver.c`: stops with a message that says why when the
   driver cannot start, releases a frame only when one is in progress, and lost an
   unused variable and two unused parameters. Moved out of `src/` so that the Arduino
